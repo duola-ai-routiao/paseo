@@ -9,6 +9,8 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import type { Logger } from "pino";
 import { z } from "zod";
 import { createBranchChangeRouteHandler } from "./script-route-branch-handler.js";
+import { PaseoHubConnector } from "./hub/connector.js";
+import { loadOrCreateHubDeviceKeyPair } from "./hub/device-keypair.js";
 
 export type ListenTarget =
   | { type: "tcp"; host: string; port: number }
@@ -171,7 +173,7 @@ import type {
   AgentProviderRuntimeSettingsMap,
   ProviderOverride,
 } from "./agent/provider-launch-config.js";
-import type { PersistedConfig } from "./persisted-config.js";
+import { loadPersistedConfig, type PersistedConfig } from "./persisted-config.js";
 import { createServiceProxySubsystem, type ServiceProxySubsystem } from "./service-proxy.js";
 import { releaseWorkspaceServicePortPlan } from "./workspace-service-port-registry.js";
 import { ScriptHealthMonitor } from "./script-health-monitor.js";
@@ -399,6 +401,12 @@ export interface PaseoDaemonConfig {
   relayPublicEndpoint?: string;
   relayUseTls?: boolean;
   relayPublicUseTls?: boolean;
+  hub?: {
+    enabled: boolean;
+    url: string;
+    deviceId: string;
+    token: string;
+  };
   serviceProxy?: {
     publicBaseUrl: string | null;
     standaloneListen: string | null;
@@ -544,6 +552,7 @@ export async function createPaseoDaemon(
 
   const serverId = getOrCreateServerId(config.paseoHome, { logger });
   const daemonKeyPair = await loadOrCreateDaemonKeyPair(config.paseoHome, logger);
+  const hubDeviceKeyPair = loadOrCreateHubDeviceKeyPair(config.paseoHome, logger);
   const managedProcesses = createBootstrapManagedProcessRegistry(config, logger);
   // Reconcile the helper-process ledger in the background so it never blocks the
   // daemon from coming up; terminating a live leftover can take a few seconds.
@@ -552,6 +561,9 @@ export async function createPaseoDaemon(
     logger.warn({ err: error }, "Failed to reconcile managed helper process ledger");
   });
   let relayTransport: RelayTransportController | null = null;
+  let hubConnector: PaseoHubConnector | null = null;
+  let hubConfigPoller: ReturnType<typeof setInterval> | null = null;
+  let activeHubConfigKey = "";
 
   const staticDir = config.staticDir;
   const downloadTokenTtlMs = config.downloadTokenTtlMs ?? 60000;
@@ -1532,6 +1544,48 @@ export async function createPaseoDaemon(
             );
             await hubRelationships.start();
 
+            const syncHubConnector = async () => {
+              const persistedHub = loadPersistedConfig(config.paseoHome, logger).daemon?.hub;
+              const nextHub =
+                persistedHub?.enabled &&
+                persistedHub.url &&
+                persistedHub.deviceId &&
+                persistedHub.token
+                  ? {
+                      enabled: true,
+                      url: persistedHub.url,
+                      deviceId: persistedHub.deviceId,
+                      token: persistedHub.token,
+                    }
+                  : undefined;
+              const nextKey = nextHub
+                ? `${nextHub.url}\n${nextHub.deviceId}\n${nextHub.token}`
+                : "";
+              if (nextKey === activeHubConfigKey) return;
+              await hubConnector?.stop();
+              hubConnector = null;
+              activeHubConfigKey = nextKey;
+              if (!nextHub) return;
+              hubConnector = new PaseoHubConnector({
+                logger,
+                config: nextHub,
+                daemonId: serverId,
+                publicKey: hubDeviceKeyPair.publicKeyB64,
+                signCanonical: hubDeviceKeyPair.signCanonical,
+                workspaceRegistry,
+                providerSnapshotManager,
+                agentManager,
+                agentStorage,
+              });
+              hubConnector.start();
+            };
+            await syncHubConnector();
+            hubConfigPoller = setInterval(() => {
+              void syncHubConnector().catch((error) =>
+                logger.warn({ err: error }, "Failed to refresh Hub connector configuration"),
+              );
+            }, 2_000);
+
             if (relayEnabled) {
               const offer = await createConnectionOfferV2({
                 serverId,
@@ -1593,6 +1647,9 @@ export async function createPaseoDaemon(
   const stop = async () => {
     await hubRelationships.stop();
     workspaceReconciliation.dispose();
+    if (hubConfigPoller) clearInterval(hubConfigPoller);
+    hubConfigPoller = null;
+    await hubConnector?.stop();
     scriptHealthMonitor.stop();
     clearInterval(idleAgentCollectionTimer);
     await inFlightIdleAgentCollection;

@@ -3,6 +3,7 @@ export { createPaseoDaemon, type PaseoDaemon, type PaseoDaemonConfig } from "./b
 export { loadConfig, type CliConfigOverrides } from "./config.js";
 export { resolvePaseoHome } from "./paseo-home.js";
 export { getOrCreateServerId } from "./server-id.js";
+export { loadOrCreateHubDeviceKeyPair } from "./hub/device-keypair.js";
 export { createRootLogger, type LogLevel, type LogFormat } from "./logger.js";
 export {
   loadPersistedConfig,

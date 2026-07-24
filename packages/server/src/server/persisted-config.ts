@@ -268,6 +268,15 @@ export const PersistedConfigSchema = z
           })
           .strict()
           .optional(),
+        hub: z
+          .object({
+            enabled: z.boolean().optional(),
+            url: z.url().optional(),
+            deviceId: z.string().min(1).optional(),
+            token: z.string().min(1).optional(),
+          })
+          .strict()
+          .optional(),
         serviceProxy: z
           .object({
             // COMPAT(serviceProxyEnabled): added 2026-06-02, remove after 2026-12-02.
