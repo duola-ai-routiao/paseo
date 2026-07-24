@@ -76,6 +76,7 @@ export class PaseoHubConnector {
   private reconnectDelayMs = RECONNECT_MIN_MS;
   private readonly requestResponses = new Map<string, PaseoHubOutboundMessage>();
   private readonly executionAgents = new Map<string, string>();
+  private readonly adoptingAgents = new Map<string, string>();
   private readonly eventSeq = new Map<string, number>();
   private unsubscribeAgents: (() => void) | null = null;
   private lastError: string | null = null;
@@ -186,6 +187,12 @@ export class PaseoHubConnector {
         return;
       case "hub.execution.agent.create.request":
         await this.createExecution(message);
+        return;
+      case "hub.execution.agent.adopt.request":
+        await this.adoptExecution(message);
+        return;
+      case "hub.execution.agent.release.request":
+        await this.releaseExecution(message);
         return;
       case "hub.execution.agent.send.request":
         await this.sendMessage(message);
@@ -345,6 +352,144 @@ export class PaseoHubConnector {
     }
   }
 
+  private async adoptExecution(
+    message: Extract<PaseoHubInboundMessage, { type: "hub.execution.agent.adopt.request" }>,
+  ): Promise<void> {
+    const cached = this.requestResponses.get(message.requestId);
+    if (cached) {
+      this.send(cached);
+      return;
+    }
+
+    let response: PaseoHubOutboundMessage;
+    try {
+      const existing = await this.findExecutionRecord(message.executionId);
+      if (existing) {
+        if (existing.id !== message.paseoAgentId) {
+          throw new Error("execution is already bound to a different agent");
+        }
+        this.executionAgents.set(message.executionId, existing.id);
+        response = this.adoptResponse(message, true, existing.id, null);
+      } else {
+        const agentId = await this.claimExistingAgent(message);
+        this.executionAgents.set(message.executionId, agentId);
+        response = this.adoptResponse(message, true, agentId, null);
+        if (message.prompt?.trim()) {
+          this.consumeRun(message.executionId, agentId, message.prompt);
+        }
+      }
+    } catch (error) {
+      response = this.adoptResponse(
+        message,
+        false,
+        null,
+        error instanceof Error ? error.message : "adopt failed",
+      );
+    }
+    this.requestResponses.set(message.requestId, response);
+    this.send(response);
+  }
+
+  private adoptResponse(
+    message: Extract<PaseoHubInboundMessage, { type: "hub.execution.agent.adopt.request" }>,
+    accepted: boolean,
+    paseoAgentId: string | null,
+    error: string | null,
+  ): PaseoHubOutboundMessage {
+    return {
+      type: "hub.execution.agent.adopt.response",
+      requestId: message.requestId,
+      executionId: message.executionId,
+      accepted,
+      paseoAgentId,
+      error,
+    };
+  }
+
+  private async releaseExecution(
+    message: Extract<PaseoHubInboundMessage, { type: "hub.execution.agent.release.request" }>,
+  ): Promise<void> {
+    const cached = this.requestResponses.get(message.requestId);
+    if (cached) {
+      this.send(cached);
+      return;
+    }
+    let response: PaseoHubOutboundMessage;
+    try {
+      const agentId = await this.resolveExecutionAgent(message.executionId);
+      if (agentId !== message.paseoAgentId) {
+        throw new Error("execution is bound to a different agent");
+      }
+      await this.options.agentManager.releaseDaemonExecution(
+        agentId,
+        this.executionOwner(message.executionId),
+      );
+      this.executionAgents.delete(message.executionId);
+      response = {
+        type: "hub.execution.agent.release.response",
+        requestId: message.requestId,
+        executionId: message.executionId,
+        accepted: true,
+        error: null,
+      };
+    } catch (error) {
+      response = {
+        type: "hub.execution.agent.release.response",
+        requestId: message.requestId,
+        executionId: message.executionId,
+        accepted: false,
+        error: error instanceof Error ? error.message : "release failed",
+      };
+    }
+    this.requestResponses.set(message.requestId, response);
+    this.send(response);
+  }
+
+  private async claimExistingAgent(
+    message: Extract<PaseoHubInboundMessage, { type: "hub.execution.agent.adopt.request" }>,
+  ): Promise<string> {
+    const claimant = this.adoptingAgents.get(message.paseoAgentId);
+    if (claimant && claimant !== message.executionId) {
+      throw new Error("agent is already being adopted by another execution");
+    }
+    this.adoptingAgents.set(message.paseoAgentId, message.executionId);
+    try {
+      const workspace = await this.options.workspaceRegistry.get(message.workspaceId);
+      if (!workspace || workspace.archivedAt || workspace.cwd !== message.cwd) {
+        throw new Error("workspace not found or path mismatch");
+      }
+      const record = await this.options.agentStorage.get(message.paseoAgentId);
+      if (!record || record.archivedAt) throw new Error("agent not found");
+      if (
+        record.workspaceId !== message.workspaceId ||
+        record.cwd !== message.cwd ||
+        record.provider !== message.provider
+      ) {
+        throw new Error("agent does not belong to the requested execution target");
+      }
+      if (record.owner || record.labels["ginit.execution_id"]) {
+        throw new Error("agent is already managed by a Hub execution");
+      }
+      await this.loadExecutionAgent(record.id, {
+        agentManager: this.options.agentManager,
+        agentStorage: this.options.agentStorage,
+        logger: this.logger,
+      });
+      if (this.options.agentManager.hasInFlightRun(record.id)) {
+        throw new Error("agent is already running");
+      }
+      await this.options.agentManager.claimDaemonExecution(
+        record.id,
+        this.executionOwner(message.executionId),
+      );
+      return record.id;
+    } finally {
+      if (this.adoptingAgents.get(message.paseoAgentId) === message.executionId) {
+        this.adoptingAgents.delete(message.paseoAgentId);
+      }
+    }
+  }
+
   private consumeRun(executionId: string, agentId: string, prompt: string): void {
     void (async () => {
       try {
@@ -432,6 +577,7 @@ export class PaseoHubConnector {
     const workspaces = (await this.options.workspaceRegistry.list()).filter(
       (workspace) => !workspace.archivedAt,
     );
+    const agents = await this.options.agentStorage.list();
     const snapshots = await Promise.all(
       workspaces.map(async (workspace) => {
         await this.options.providerSnapshotManager.warmUpSnapshotForCwd({ cwd: workspace.cwd });
@@ -447,6 +593,25 @@ export class PaseoHubConnector {
           cwd: workspace.cwd,
           title: workspace.title ?? workspace.displayName,
           providers,
+          agents: agents
+            .filter(
+              (agent) => agent.workspaceId === workspace.workspaceId && agent.cwd === workspace.cwd,
+            )
+            .map((agent) => ({
+              id: agent.id,
+              provider: agent.provider,
+              workspaceId: agent.workspaceId ?? "",
+              cwd: agent.cwd,
+              title: agent.title ?? null,
+              status: agent.lastStatus,
+              lastActivityAt: agent.lastActivityAt ?? null,
+              adoptable:
+                !agent.archivedAt &&
+                !agent.owner &&
+                !agent.labels["ginit.execution_id"] &&
+                agent.lastStatus !== "initializing" &&
+                agent.lastStatus !== "running",
+            })),
         };
       }),
     );

@@ -20,3 +20,20 @@ Paseo owns provider session state, Ginit owns enrollment and connection
 fencing, and Multica owns ExecutionTarget/task authorization. Hub never stores
 provider credentials or transcript content. Existing Relay, local UI, and
 legacy Multica runtimes are unchanged when Hub is not configured.
+
+## Existing-session adoption
+
+Hub can explicitly adopt a previously local Paseo agent instead of creating a
+new one. Workspace snapshots expose only candidate metadata, never timeline
+content. The daemon verifies the selected workspace, provider, path, and exact
+agent ID, then rejects archived, running, or already Hub-managed agents before
+persisting the execution ownership and forwarding the first prompt.
+
+Consumers must request this operation explicitly. Paseo never chooses a
+"first" session, and a group route without an adopted session must fail closed
+rather than create a replacement conversation.
+
+To change a route's context, consumers first request release. Paseo releases
+only the same idle execution owner; it rejects a running or mismatched session.
+The route remains unavailable until the release acknowledgement completes, so a
+conversation can never be used concurrently by two routes.

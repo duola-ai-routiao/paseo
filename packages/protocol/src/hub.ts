@@ -8,6 +8,17 @@ export const HubProviderSnapshotSchema = z.object({
   capabilities: z.record(z.string(), z.boolean()).optional(),
 });
 
+export const HubWorkspaceAgentSchema = z.object({
+  id: z.string().min(1),
+  provider: z.string().min(1),
+  workspaceId: z.string().min(1),
+  cwd: z.string().min(1),
+  title: z.string().nullable(),
+  status: z.string().min(1),
+  lastActivityAt: z.string().nullable(),
+  adoptable: z.boolean(),
+});
+
 export const HubRepoIdentitySchema = z.object({
   remote: z.string().nullable().optional(),
   fingerprint: z.string().nullable().optional(),
@@ -19,6 +30,7 @@ export const HubWorkspaceSnapshotSchema = z.object({
   title: z.string().min(1),
   repoIdentity: HubRepoIdentitySchema.optional(),
   providers: z.array(HubProviderSnapshotSchema),
+  agents: z.array(HubWorkspaceAgentSchema).optional(),
 });
 
 export const HubHelloSchema = z.object({
@@ -85,6 +97,41 @@ export const HubExecutionCreateResponseSchema = z.object({
   executionId: z.string().min(1),
   accepted: z.boolean(),
   paseoAgentId: z.string().nullable(),
+  error: z.string().nullable(),
+});
+
+export const HubExecutionAdoptRequestSchema = z.object({
+  type: z.literal("hub.execution.agent.adopt.request"),
+  requestId: z.string().min(1),
+  executionId: z.string().min(1),
+  workspaceId: z.string().min(1),
+  provider: z.string().min(1),
+  cwd: z.string().min(1),
+  paseoAgentId: z.string().min(1),
+  prompt: z.string().optional(),
+});
+
+export const HubExecutionAdoptResponseSchema = z.object({
+  type: z.literal("hub.execution.agent.adopt.response"),
+  requestId: z.string().min(1),
+  executionId: z.string().min(1),
+  accepted: z.boolean(),
+  paseoAgentId: z.string().nullable(),
+  error: z.string().nullable(),
+});
+
+export const HubExecutionReleaseRequestSchema = z.object({
+  type: z.literal("hub.execution.agent.release.request"),
+  requestId: z.string().min(1),
+  executionId: z.string().min(1),
+  paseoAgentId: z.string().min(1),
+});
+
+export const HubExecutionReleaseResponseSchema = z.object({
+  type: z.literal("hub.execution.agent.release.response"),
+  requestId: z.string().min(1),
+  executionId: z.string().min(1),
+  accepted: z.boolean(),
   error: z.string().nullable(),
 });
 
@@ -195,6 +242,8 @@ export const PaseoHubInboundMessageSchema = z.discriminatedUnion("type", [
   HubWelcomeSchema,
   HubHeartbeatSchema,
   HubExecutionCreateRequestSchema,
+  HubExecutionAdoptRequestSchema,
+  HubExecutionReleaseRequestSchema,
   HubExecutionSendRequestSchema,
   HubExecutionCancelRequestSchema,
   HubExecutionApprovalResponseSchema,
@@ -209,6 +258,8 @@ export const PaseoHubOutboundMessageSchema = z.discriminatedUnion("type", [
   HubWorkspaceSnapshotMessageSchema,
   HubTargetRemoveSchema,
   HubExecutionCreateResponseSchema,
+  HubExecutionAdoptResponseSchema,
+  HubExecutionReleaseResponseSchema,
   HubExecutionSendResponseSchema,
   HubExecutionCancelResponseSchema,
   HubExecutionApprovalResultSchema,
