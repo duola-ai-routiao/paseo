@@ -33,6 +33,7 @@ import type { TerminalActivity } from "@getpaseo/protocol/terminal-activity";
 import type { HostnamesConfig } from "./hostnames.js";
 import { isHostnameAllowed } from "./hostnames.js";
 import { Session, type SessionLifecycleIntent, type SessionRuntimeMetrics } from "./session.js";
+import type { HubGinitEnroller } from "./hub/ginit-enroller.js";
 import type { HubRelationshipManagement } from "./hub/relationship-controller.js";
 import type { HubExecutionAgents } from "./hub/daemon-executions.js";
 import type { AgentProvider } from "./agent/agent-sdk-types.js";
@@ -418,6 +419,7 @@ interface SocketSessionOptions {
   onLifecycleIntent?: (intent: SessionLifecycleIntent) => void;
   hubExecutionAgents?: HubExecutionAgents;
   hubRelationships?: HubRelationshipManagement;
+  hubGinitEnroller?: HubGinitEnroller;
 }
 
 const SLOW_REQUEST_THRESHOLD_MS = 500;
@@ -527,6 +529,7 @@ export class VoiceAssistantWebSocketServer {
   private unsubscribeTerminalActivity: (() => void) | null = null;
   private readonly browserToolsBroker: BrowserToolsBroker | null;
   private readonly hubRelationships: HubRelationshipManagement | null;
+  private readonly hubGinitEnroller: HubGinitEnroller | null;
   private readonly browserToolsRegistrations = new Map<string, BrowserToolsRegistration>();
   private acceptingConnections = true;
 
@@ -574,6 +577,7 @@ export class VoiceAssistantWebSocketServer {
     serviceProxyPublicBaseUrl?: string | null,
     browserToolsBroker?: BrowserToolsBroker | null,
     hubRelationships?: HubRelationshipManagement | null,
+    hubGinitEnroller?: HubGinitEnroller | null,
   ) {
     this.logger = logger.child({ module: "websocket-server" });
     this.serverId = serverId;
@@ -584,6 +588,7 @@ export class VoiceAssistantWebSocketServer {
     this.daemonRuntimeConfig = daemonRuntimeConfig;
     this.browserToolsBroker = browserToolsBroker ?? null;
     this.hubRelationships = hubRelationships ?? null;
+    this.hubGinitEnroller = hubGinitEnroller ?? null;
     this.agentManager = agentManager;
     this.agentStorage = agentStorage;
     this.projectRegistry = projectRegistry ?? createNoopProjectRegistry();
@@ -1146,6 +1151,7 @@ export class VoiceAssistantWebSocketServer {
         this.onLifecycleIntent?.(intent);
       },
       hubRelationships: this.hubRelationships ?? undefined,
+      hubGinitEnroller: this.hubGinitEnroller ?? undefined,
     });
 
     connection = {
@@ -1206,6 +1212,7 @@ export class VoiceAssistantWebSocketServer {
       providerUsageService: this.providerUsageService,
       hubExecutionAgents: options.hubExecutionAgents,
       hubRelationships: options.hubRelationships,
+      hubGinitEnroller: options.hubGinitEnroller,
       serviceProxy: this.serviceProxy ?? undefined,
       scriptRuntimeStore: this.scriptRuntimeStore ?? undefined,
       workspaceSetupSnapshots: this.workspaceSetupSnapshots,

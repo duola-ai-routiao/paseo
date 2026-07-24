@@ -152,6 +152,7 @@ import { AgentConfigSession } from "./session/agent-config/agent-config-session.
 import { ProjectConfigSession } from "./session/project-config/project-config-session.js";
 import { DaemonSession, type DaemonRuntimeConfig } from "./session/daemon/daemon-session.js";
 import type { DaemonWebSocketRuntimeDiagnosticSnapshot } from "./session/daemon/diagnostics.js";
+import type { HubGinitEnroller } from "./hub/ginit-enroller.js";
 import type { HubRelationshipManagement } from "./hub/relationship-controller.js";
 import { HubExecutionController } from "./hub/execution-controller.js";
 import type { HubExecutionAgents } from "./hub/daemon-executions.js";
@@ -436,6 +437,7 @@ export interface SessionOptions {
   providerUsageService: ProviderUsageService;
   hubExecutionAgents?: HubExecutionAgents;
   hubRelationships?: HubRelationshipManagement;
+  hubGinitEnroller?: HubGinitEnroller;
   serviceProxy?: ServiceProxySubsystem;
   scriptRuntimeStore?: WorkspaceScriptRuntimeStore;
   workspaceSetupSnapshots?: Map<string, WorkspaceSetupSnapshot>;
@@ -862,6 +864,7 @@ export class Session {
       listWorkspaces: () => this.workspaceRegistry.list(),
       logger: this.sessionLogger,
       hubRelationships: options.hubRelationships,
+      hubGinitEnroller: options.hubGinitEnroller,
     });
     this.hubExecutionController = options.hubExecutionAgents
       ? new HubExecutionController({
@@ -1967,6 +1970,10 @@ export class Session {
       case "hub.management.daemon.get_status.request":
       case "hub.management.daemon.disconnect.request":
         return this.daemonSession.handleHubRelationshipRequest(msg);
+      case "hub.login_ginit.request":
+        return this.daemonSession.handleHubLoginGinit(msg);
+      case "hub.enroll_status.request":
+        return this.daemonSession.handleHubEnrollStatus(msg);
       case "diagnostics.request":
         return this.daemonSession.handleDiagnosticsRequest(msg);
       case "daemon.update.request":

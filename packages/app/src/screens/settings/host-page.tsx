@@ -365,6 +365,8 @@ export function HostSettingsPage({
 
       <HostStatusBadges serverId={serverId} />
 
+      <GinitHubSection serverId={serverId} />
+
       {isLocalDaemon ? <LocalDaemonSection /> : null}
 
       {!isLocalDaemon ? <UpdateDaemonCard key={host.serverId} host={host} /> : null}
@@ -416,6 +418,102 @@ export function HostRenameButton({ host }: { host: HostProfile }) {
         testID="host-page-rename-modal"
       />
     </>
+  );
+}
+
+function GinitHubSection({ serverId }: { serverId: string }) {
+  const daemonClient = useHostRuntimeClient(serverId);
+  const [enrollStatus, setEnrollStatus] = useState<{
+    enrolled: boolean;
+    deviceId: string | null;
+    hubUrl: string | null;
+  } | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!daemonClient) return;
+    daemonClient
+      .hubGetEnrollStatus()
+      .then((res) =>
+        setEnrollStatus({ enrolled: res.enrolled, deviceId: res.deviceId, hubUrl: res.hubUrl }),
+      )
+      .catch((err) => console.warn("[GinitHubSection] Failed to fetch status", err));
+  }, [daemonClient]);
+
+  const handleLogin = useCallback(async () => {
+    if (!daemonClient) return;
+    setIsLoading(true);
+    setErrorMessage(null);
+
+    try {
+      const GINIT_BASE_URL = "https://ginit.opensii.ai";
+      const startRes = await fetch(`${GINIT_BASE_URL}/auth/device/start`, { method: "POST" });
+      if (!startRes.ok) throw new Error(`Device start failed: ${startRes.status}`);
+      const { device_code, verification_uri, expires_in } = await startRes.json();
+
+      const { openExternalUrl } = await import("@/utils/open-external-url");
+      await openExternalUrl(verification_uri);
+
+      const deadline = Date.now() + expires_in * 1000;
+      let token: string | null = null;
+      while (Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        const pollRes = await fetch(`${GINIT_BASE_URL}/auth/device/poll`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ device_code }),
+        });
+        if (pollRes.status === 202) continue;
+        if (pollRes.ok) {
+          const data = await pollRes.json();
+          if (data.status === "completed") {
+            token = data.token;
+            break;
+          }
+        } else {
+          throw new Error(`Poll failed: ${pollRes.status}`);
+        }
+      }
+      if (!token) throw new Error("Login timeout");
+
+      const enrollRes = await daemonClient.hubLoginGinit(GINIT_BASE_URL, token);
+      if (!enrollRes.success) {
+        throw new Error(enrollRes.error || "Enrollment failed");
+      }
+
+      setEnrollStatus({
+        enrolled: true,
+        deviceId: enrollRes.deviceId,
+        hubUrl: enrollRes.hubUrl,
+      });
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsLoading(false);
+    }
+  }, [daemonClient]);
+
+  if (!daemonClient) return null;
+
+  return (
+    <SettingsSection title="Ginit Hub">
+      <View style={settingsStyles.card}>
+        {enrollStatus?.enrolled ? (
+          <View style={ginitHubStyles.container}>
+            <Text style={ginitHubStyles.enrolledLabel}>Device enrolled</Text>
+            <Text style={ginitHubStyles.deviceId}>{enrollStatus.deviceId}</Text>
+          </View>
+        ) : (
+          <View style={ginitHubStyles.container}>
+            <Button onPress={handleLogin} disabled={isLoading} style={ginitHubStyles.loginButton}>
+              {isLoading ? "Logging in..." : "Login with Feishu"}
+            </Button>
+            {errorMessage ? <Text style={ginitHubStyles.errorText}>{errorMessage}</Text> : null}
+          </View>
+        )}
+      </View>
+    </SettingsSection>
   );
 }
 
@@ -1839,6 +1937,29 @@ const terminalProfileStyles = StyleSheet.create((theme) => ({
     color: theme.colors.foregroundMuted,
     fontSize: theme.fontSize.sm,
     textAlign: "center",
+  },
+}));
+
+const ginitHubStyles = StyleSheet.create((theme) => ({
+  container: {
+    padding: theme.spacing[4],
+  },
+  enrolledLabel: {
+    fontSize: theme.fontSize.sm,
+    color: theme.colors.foreground,
+    marginBottom: theme.spacing[2],
+  },
+  deviceId: {
+    fontSize: theme.fontSize.xs,
+    color: theme.colors.foregroundMuted,
+  },
+  loginButton: {
+    marginBottom: theme.spacing[2],
+  },
+  errorText: {
+    fontSize: theme.fontSize.xs,
+    color: theme.colors.destructive,
+    marginTop: theme.spacing[2],
   },
 }));
 

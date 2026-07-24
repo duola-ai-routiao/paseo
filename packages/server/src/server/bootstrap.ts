@@ -200,6 +200,7 @@ import {
 } from "./agent/create-agent/create.js";
 import { archiveAgentCommand } from "./agent/lifecycle-command.js";
 import { CreateAgentLifecycleDispatch } from "./agent/create-agent-lifecycle-dispatch.js";
+import { GinitHubEnroller } from "./hub/ginit-enroller.js";
 import {
   HubRelationshipController,
   type HubRelationshipClock,
@@ -1094,6 +1095,11 @@ export async function createPaseoDaemon(
       }),
   });
 
+  const hubGinitEnroller = new GinitHubEnroller({
+    paseoHome: config.paseoHome,
+    logger,
+  });
+
   const loopService = new LoopService({
     paseoHome: config.paseoHome,
     logger,
@@ -1529,6 +1535,7 @@ export async function createPaseoDaemon(
               serviceProxyPublicBaseUrl,
               browserToolsBroker,
               hubRelationships,
+              hubGinitEnroller,
             );
             await hubRelationships.start();
 

@@ -280,6 +280,15 @@ export const PersistedConfigSchema = z
           .strict()
           .optional(),
         auth: DaemonAuthSchema.optional(),
+        hub: z
+          .object({
+            enabled: z.boolean().optional(),
+            url: z.string().optional(),
+            deviceId: z.string().optional(),
+            token: z.string().optional(),
+          })
+          .strict()
+          .optional(),
       })
       .strict()
       .transform(({ allowedHosts, ...daemon }) => {

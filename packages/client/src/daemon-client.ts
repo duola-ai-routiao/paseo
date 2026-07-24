@@ -4362,6 +4362,37 @@ export class DaemonClient {
     });
   }
 
+  async hubLoginGinit(
+    ginitBaseUrl: string,
+    ginitToken: string,
+    requestId?: string,
+  ): Promise<{
+    requestId: string;
+    success: boolean;
+    deviceId: string | null;
+    hubUrl: string | null;
+    error: string | null;
+  }> {
+    return this.sendCorrelatedSessionRequest({
+      requestId,
+      message: { type: "hub.login_ginit.request", ginitBaseUrl, ginitToken },
+      responseType: "hub.login_ginit.response",
+    });
+  }
+
+  async hubGetEnrollStatus(requestId?: string): Promise<{
+    requestId: string;
+    enrolled: boolean;
+    deviceId: string | null;
+    hubUrl: string | null;
+  }> {
+    return this.sendCorrelatedSessionRequest({
+      requestId,
+      message: { type: "hub.enroll_status.request" },
+      responseType: "hub.enroll_status.response",
+    });
+  }
+
   async getDaemonPairingOffer(
     options?: DaemonPairingOfferOptions,
   ): Promise<DaemonPairingOfferPayload> {

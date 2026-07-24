@@ -1153,6 +1153,18 @@ export const HubManagementDaemonDisconnectRequestSchema = z.object({
   force: z.boolean().optional(),
 });
 
+export const HubLoginGinitRequestSchema = z.object({
+  type: z.literal("hub.login_ginit.request"),
+  requestId: z.string(),
+  ginitBaseUrl: z.string().url(),
+  ginitToken: z.string().min(1),
+});
+
+export const HubGetEnrollStatusRequestSchema = z.object({
+  type: z.literal("hub.enroll_status.request"),
+  requestId: z.string(),
+});
+
 export const DiagnosticsRequestSchema = z.object({
   type: z.literal("diagnostics.request"),
   requestId: z.string(),
@@ -2432,6 +2444,8 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   HubManagementDaemonConnectRequestSchema,
   HubManagementDaemonGetStatusRequestSchema,
   HubManagementDaemonDisconnectRequestSchema,
+  HubLoginGinitRequestSchema,
+  HubGetEnrollStatusRequestSchema,
   DiagnosticsRequestSchema,
   GetDaemonConfigRequestMessageSchema,
   SetDaemonConfigRequestMessageSchema,
@@ -2559,6 +2573,9 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
 ]);
 
 export type SessionInboundMessage = z.infer<typeof SessionInboundMessageSchema>;
+
+export type HubLoginGinitRequest = z.infer<typeof HubLoginGinitRequestSchema>;
+export type HubGetEnrollStatusRequest = z.infer<typeof HubGetEnrollStatusRequestSchema>;
 
 // ============================================================================
 // Session Outbound Messages (Session emits these)
@@ -3732,6 +3749,27 @@ export const HubManagementDaemonDisconnectResponseSchema = z.object({
     requestId: z.string(),
     status: HubRelationshipStatusSchema,
     warning: z.string().optional(),
+  }),
+});
+
+export const HubLoginGinitResponseSchema = z.object({
+  type: z.literal("hub.login_ginit.response"),
+  payload: z.object({
+    requestId: z.string(),
+    success: z.boolean(),
+    deviceId: z.string().nullable(),
+    hubUrl: z.string().nullable(),
+    error: z.string().nullable(),
+  }),
+});
+
+export const HubGetEnrollStatusResponseSchema = z.object({
+  type: z.literal("hub.enroll_status.response"),
+  payload: z.object({
+    requestId: z.string(),
+    enrolled: z.boolean(),
+    deviceId: z.string().nullable(),
+    hubUrl: z.string().nullable(),
   }),
 });
 
@@ -5143,6 +5181,8 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   HubManagementDaemonConnectResponseSchema,
   HubManagementDaemonGetStatusResponseSchema,
   HubManagementDaemonDisconnectResponseSchema,
+  HubLoginGinitResponseSchema,
+  HubGetEnrollStatusResponseSchema,
   DiagnosticsResponseSchema,
   GetDaemonConfigResponseMessageSchema,
   SetDaemonConfigResponseMessageSchema,
@@ -5253,6 +5293,9 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
 ]);
 
 export type SessionOutboundMessage = z.infer<typeof SessionOutboundMessageSchema>;
+
+export type HubLoginGinitResponse = z.infer<typeof HubLoginGinitResponseSchema>;
+export type HubGetEnrollStatusResponse = z.infer<typeof HubGetEnrollStatusResponseSchema>;
 
 // Type exports for individual message types
 export type ActivityLogMessage = z.infer<typeof ActivityLogMessageSchema>;

@@ -10,6 +10,7 @@ import {
 import { DaemonSelfUpdateSessionController } from "./daemon-self-update-session-controller.js";
 import type { ManagedAgent } from "../../agent/agent-manager.js";
 import type { PersistedProjectRecord, PersistedWorkspaceRecord } from "../../workspace-registry.js";
+import type { HubGinitEnroller } from "../../hub/ginit-enroller.js";
 import type { HubRelationshipManagement } from "../../hub/relationship-controller.js";
 
 export interface DaemonRuntimeConfig {
@@ -50,6 +51,7 @@ export interface DaemonSessionOptions {
   getWebSocketRuntimeMetrics?: () => DaemonWebSocketRuntimeDiagnosticSnapshot | null;
   logger: pino.Logger;
   hubRelationships?: HubRelationshipManagement;
+  hubGinitEnroller?: HubGinitEnroller;
 }
 
 /**
@@ -74,6 +76,7 @@ export class DaemonSession {
   private readonly logger: pino.Logger;
   private readonly selfUpdate: DaemonSelfUpdateSessionController;
   private readonly hubRelationships: HubRelationshipManagement | null;
+  private readonly hubGinitEnroller: HubGinitEnroller | null;
 
   constructor(options: DaemonSessionOptions) {
     this.host = options.host;
@@ -89,6 +92,7 @@ export class DaemonSession {
     this.getWebSocketRuntimeMetrics = options.getWebSocketRuntimeMetrics ?? (() => null);
     this.logger = options.logger;
     this.hubRelationships = options.hubRelationships ?? null;
+    this.hubGinitEnroller = options.hubGinitEnroller ?? null;
     this.selfUpdate = new DaemonSelfUpdateSessionController({
       clientId: this.clientId,
       daemonVersion: this.daemonVersion ?? null,
@@ -137,6 +141,70 @@ export class DaemonSession {
       });
     } catch (error) {
       this.logger.error({ err: error }, "Failed to handle Hub relationship request");
+      this.host.emit({
+        type: "rpc_error",
+        payload: {
+          requestId: msg.requestId,
+          requestType: msg.type,
+          error: error instanceof Error ? error.message : String(error),
+          code: "handler_error",
+        },
+      });
+    }
+  }
+
+  async handleHubLoginGinit(
+    msg: Extract<SessionInboundMessage, { type: "hub.login_ginit.request" }>,
+  ): Promise<void> {
+    try {
+      if (!this.hubGinitEnroller) {
+        throw new Error("Ginit Hub enrollment is unavailable");
+      }
+      const result = await this.hubGinitEnroller.enroll(msg.ginitBaseUrl, msg.ginitToken);
+      this.host.emit({
+        type: "hub.login_ginit.response",
+        payload: {
+          requestId: msg.requestId,
+          success: true,
+          deviceId: result.deviceId,
+          hubUrl: result.hubUrl,
+          error: null,
+        },
+      });
+    } catch (error) {
+      this.logger.error({ err: error }, "Ginit Hub enrollment failed");
+      this.host.emit({
+        type: "hub.login_ginit.response",
+        payload: {
+          requestId: msg.requestId,
+          success: false,
+          deviceId: null,
+          hubUrl: null,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      });
+    }
+  }
+
+  async handleHubEnrollStatus(
+    msg: Extract<SessionInboundMessage, { type: "hub.enroll_status.request" }>,
+  ): Promise<void> {
+    try {
+      if (!this.hubGinitEnroller) {
+        throw new Error("Ginit Hub enrollment is unavailable");
+      }
+      const status = this.hubGinitEnroller.getStatus();
+      this.host.emit({
+        type: "hub.enroll_status.response",
+        payload: {
+          requestId: msg.requestId,
+          enrolled: status.enrolled,
+          deviceId: status.deviceId,
+          hubUrl: status.hubUrl,
+        },
+      });
+    } catch (error) {
+      this.logger.error({ err: error }, "Failed to get Ginit Hub enrollment status");
       this.host.emit({
         type: "rpc_error",
         payload: {
