@@ -16,6 +16,15 @@ export interface GinitEnrollerLogger {
 export interface HubGinitEnroller {
   enroll(ginitBaseUrl: string, ginitToken: string): Promise<{ deviceId: string; hubUrl: string }>;
   getStatus(): { enrolled: boolean; deviceId: string | null; hubUrl: string | null };
+  deviceStart(ginitBaseUrl: string): Promise<{
+    deviceCode: string;
+    verificationUri: string;
+    expiresIn: number;
+  }>;
+  devicePoll(
+    ginitBaseUrl: string,
+    deviceCode: string,
+  ): Promise<{ status: "pending" | "completed"; token: string | null }>;
 }
 
 export interface HubGinitEnrollerOptions {
@@ -35,6 +44,17 @@ const RedemptionResultSchema = z.object({
   device_id: z.string().min(1),
   token: z.string().min(1),
   hub_protocol: z.number().optional(),
+});
+
+const DeviceStartResultSchema = z.object({
+  device_code: z.string().min(1),
+  verification_uri: z.string().min(1),
+  expires_in: z.number(),
+});
+
+const DevicePollResultSchema = z.object({
+  status: z.enum(["pending", "completed"]),
+  token: z.string().min(1).optional(),
 });
 
 /**
@@ -137,5 +157,57 @@ export class GinitHubEnroller implements HubGinitEnroller {
       return { enrolled: true, deviceId: hub.deviceId, hubUrl: hub.url };
     }
     return { enrolled: false, deviceId: null, hubUrl: null };
+  }
+
+  /**
+   * Starts the ginit device-auth flow. Proxied through the daemon so browser
+   * clients never hit the ginit server directly (avoids CORS).
+   */
+  async deviceStart(ginitBaseUrl: string): Promise<{
+    deviceCode: string;
+    verificationUri: string;
+    expiresIn: number;
+  }> {
+    const normalized = ginitBaseUrl.replace(/\/+$/, "");
+    const res = await this.fetchImpl(`${normalized}/auth/device/start`, { method: "POST" });
+    if (!res.ok) {
+      throw new Error(`Ginit device start failed (${res.status} ${res.statusText})`);
+    }
+    const data = DeviceStartResultSchema.parse(await res.json());
+    return {
+      deviceCode: data.device_code,
+      verificationUri: data.verification_uri,
+      expiresIn: data.expires_in,
+    };
+  }
+
+  /**
+   * Polls the ginit device-auth flow. `pending` means the user has not yet
+   * authorized; `completed` carries the ginit_ user token.
+   */
+  async devicePoll(
+    ginitBaseUrl: string,
+    deviceCode: string,
+  ): Promise<{ status: "pending" | "completed"; token: string | null }> {
+    const normalized = ginitBaseUrl.replace(/\/+$/, "");
+    const res = await this.fetchImpl(`${normalized}/auth/device/poll`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ device_code: deviceCode }),
+    });
+    if (res.status === 202) {
+      return { status: "pending", token: null };
+    }
+    if (!res.ok) {
+      throw new Error(`Ginit device poll failed (${res.status} ${res.statusText})`);
+    }
+    const data = DevicePollResultSchema.parse(await res.json());
+    if (data.status === "completed") {
+      if (!data.token) {
+        throw new Error("Ginit device poll completed without a token");
+      }
+      return { status: "completed", token: data.token };
+    }
+    return { status: "pending", token: null };
   }
 }

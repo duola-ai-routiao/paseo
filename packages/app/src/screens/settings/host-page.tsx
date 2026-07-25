@@ -448,31 +448,21 @@ function GinitHubSection({ serverId }: { serverId: string }) {
 
     try {
       const GINIT_BASE_URL = "https://ginit.opensii.ai";
-      const startRes = await fetch(`${GINIT_BASE_URL}/auth/device/start`, { method: "POST" });
-      if (!startRes.ok) throw new Error(`Device start failed: ${startRes.status}`);
-      const { device_code, verification_uri, expires_in } = await startRes.json();
+      // Device flow runs through the daemon so the browser never fetches the
+      // ginit server directly (the ginit server sends no CORS headers).
+      const start = await daemonClient.hubDeviceStart(GINIT_BASE_URL);
 
       const { openExternalUrl } = await import("@/utils/open-external-url");
-      await openExternalUrl(verification_uri);
+      await openExternalUrl(start.verificationUri);
 
-      const deadline = Date.now() + expires_in * 1000;
+      const deadline = Date.now() + start.expiresIn * 1000;
       let token: string | null = null;
       while (Date.now() < deadline) {
         await new Promise((resolve) => setTimeout(resolve, 2000));
-        const pollRes = await fetch(`${GINIT_BASE_URL}/auth/device/poll`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ device_code }),
-        });
-        if (pollRes.status === 202) continue;
-        if (pollRes.ok) {
-          const data = await pollRes.json();
-          if (data.status === "completed") {
-            token = data.token;
-            break;
-          }
-        } else {
-          throw new Error(`Poll failed: ${pollRes.status}`);
+        const poll = await daemonClient.hubDevicePoll(GINIT_BASE_URL, start.deviceCode);
+        if (poll.status === "completed") {
+          token = poll.token;
+          break;
         }
       }
       if (!token) throw new Error("Login timeout");

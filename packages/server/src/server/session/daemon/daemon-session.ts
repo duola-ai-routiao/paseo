@@ -217,6 +217,67 @@ export class DaemonSession {
     }
   }
 
+  async handleHubDeviceStart(
+    msg: Extract<SessionInboundMessage, { type: "hub.device_start.request" }>,
+  ): Promise<void> {
+    try {
+      if (!this.hubGinitEnroller) {
+        throw new Error("Ginit Hub enrollment is unavailable");
+      }
+      const result = await this.hubGinitEnroller.deviceStart(msg.ginitBaseUrl);
+      this.host.emit({
+        type: "hub.device_start.response",
+        payload: {
+          requestId: msg.requestId,
+          deviceCode: result.deviceCode,
+          verificationUri: result.verificationUri,
+          expiresIn: result.expiresIn,
+        },
+      });
+    } catch (error) {
+      this.logger.error({ err: error }, "Failed to start Ginit device auth");
+      this.host.emit({
+        type: "rpc_error",
+        payload: {
+          requestId: msg.requestId,
+          requestType: msg.type,
+          error: error instanceof Error ? error.message : String(error),
+          code: "handler_error",
+        },
+      });
+    }
+  }
+
+  async handleHubDevicePoll(
+    msg: Extract<SessionInboundMessage, { type: "hub.device_poll.request" }>,
+  ): Promise<void> {
+    try {
+      if (!this.hubGinitEnroller) {
+        throw new Error("Ginit Hub enrollment is unavailable");
+      }
+      const result = await this.hubGinitEnroller.devicePoll(msg.ginitBaseUrl, msg.deviceCode);
+      this.host.emit({
+        type: "hub.device_poll.response",
+        payload: {
+          requestId: msg.requestId,
+          status: result.status,
+          token: result.token,
+        },
+      });
+    } catch (error) {
+      this.logger.error({ err: error }, "Failed to poll Ginit device auth");
+      this.host.emit({
+        type: "rpc_error",
+        payload: {
+          requestId: msg.requestId,
+          requestType: msg.type,
+          error: error instanceof Error ? error.message : String(error),
+          code: "handler_error",
+        },
+      });
+    }
+  }
+
   async handleGetStatusRequest(
     msg: Extract<SessionInboundMessage, { type: "daemon.get_status.request" }>,
   ): Promise<void> {

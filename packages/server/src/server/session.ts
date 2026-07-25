@@ -1974,6 +1974,10 @@ export class Session {
         return this.daemonSession.handleHubLoginGinit(msg);
       case "hub.enroll_status.request":
         return this.daemonSession.handleHubEnrollStatus(msg);
+      case "hub.device_start.request":
+        return this.daemonSession.handleHubDeviceStart(msg);
+      case "hub.device_poll.request":
+        return this.daemonSession.handleHubDevicePoll(msg);
       case "diagnostics.request":
         return this.daemonSession.handleDiagnosticsRequest(msg);
       case "daemon.update.request":

@@ -4393,6 +4393,38 @@ export class DaemonClient {
     });
   }
 
+  async hubDeviceStart(
+    ginitBaseUrl: string,
+    requestId?: string,
+  ): Promise<{
+    requestId: string;
+    deviceCode: string;
+    verificationUri: string;
+    expiresIn: number;
+  }> {
+    return this.sendCorrelatedSessionRequest({
+      requestId,
+      message: { type: "hub.device_start.request", ginitBaseUrl },
+      responseType: "hub.device_start.response",
+    });
+  }
+
+  async hubDevicePoll(
+    ginitBaseUrl: string,
+    deviceCode: string,
+    requestId?: string,
+  ): Promise<{
+    requestId: string;
+    status: "pending" | "completed";
+    token: string | null;
+  }> {
+    return this.sendCorrelatedSessionRequest({
+      requestId,
+      message: { type: "hub.device_poll.request", ginitBaseUrl, deviceCode },
+      responseType: "hub.device_poll.response",
+    });
+  }
+
   async getDaemonPairingOffer(
     options?: DaemonPairingOfferOptions,
   ): Promise<DaemonPairingOfferPayload> {

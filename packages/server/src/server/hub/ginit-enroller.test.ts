@@ -127,4 +127,73 @@ describe.skipIf(process.platform === "win32")("GinitHubEnroller", () => {
       /enrollment request failed \(401/i,
     );
   });
+
+  test("deviceStart posts to the ginit device endpoint and normalizes the response", async () => {
+    const home = await mkdtemp(path.join(tmpdir(), "paseo-ginit-devstart-"));
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const fetchImpl = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      calls.push({ url: url.toString(), init });
+      return jsonResponse({
+        device_code: "dc_abc",
+        verification_uri: "https://ginit.example.com/device?code=dc_abc",
+        expires_in: 600,
+      });
+    }) as unknown as typeof fetch;
+
+    const enroller = new GinitHubEnroller({ paseoHome: home, logger: silentLogger, fetchImpl });
+    const result = await enroller.deviceStart("https://ginit.example.com/");
+
+    expect(result).toEqual({
+      deviceCode: "dc_abc",
+      verificationUri: "https://ginit.example.com/device?code=dc_abc",
+      expiresIn: 600,
+    });
+    expect(calls[0]?.url).toBe("https://ginit.example.com/auth/device/start");
+    expect(calls[0]?.init?.method).toBe("POST");
+  });
+
+  test("deviceStart throws on non-OK response", async () => {
+    const home = await mkdtemp(path.join(tmpdir(), "paseo-ginit-devstart-fail-"));
+    const fetchImpl = vi.fn(
+      async () => new Response("boom", { status: 502, statusText: "Bad Gateway" }),
+    ) as unknown as typeof fetch;
+
+    const enroller = new GinitHubEnroller({ paseoHome: home, logger: silentLogger, fetchImpl });
+    await expect(enroller.deviceStart("https://ginit.example.com")).rejects.toThrow(
+      /device start failed \(502/i,
+    );
+  });
+
+  test("devicePoll maps 202 to pending and completed payload to token", async () => {
+    const home = await mkdtemp(path.join(tmpdir(), "paseo-ginit-devpoll-"));
+    const bodies: string[] = [];
+    const fetchImpl = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      bodies.push(String(init?.body));
+      if (bodies.length === 1) {
+        return new Response("", { status: 202 });
+      }
+      return jsonResponse({ status: "completed", token: "ginit_tok" });
+    }) as unknown as typeof fetch;
+
+    const enroller = new GinitHubEnroller({ paseoHome: home, logger: silentLogger, fetchImpl });
+
+    const pending = await enroller.devicePoll("https://ginit.example.com", "dc_abc");
+    expect(pending).toEqual({ status: "pending", token: null });
+    expect(JSON.parse(bodies[0] ?? "{}")).toEqual({ device_code: "dc_abc" });
+
+    const completed = await enroller.devicePoll("https://ginit.example.com", "dc_abc");
+    expect(completed).toEqual({ status: "completed", token: "ginit_tok" });
+  });
+
+  test("devicePoll throws when completed payload carries no token", async () => {
+    const home = await mkdtemp(path.join(tmpdir(), "paseo-ginit-devpoll-notok-"));
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse({ status: "completed" }),
+    ) as unknown as typeof fetch;
+
+    const enroller = new GinitHubEnroller({ paseoHome: home, logger: silentLogger, fetchImpl });
+    await expect(enroller.devicePoll("https://ginit.example.com", "dc_abc")).rejects.toThrow(
+      /without a token/i,
+    );
+  });
 });
