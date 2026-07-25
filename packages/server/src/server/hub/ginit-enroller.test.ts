@@ -69,6 +69,34 @@ describe.skipIf(process.platform === "win32")("GinitHubEnroller", () => {
     });
   });
 
+  test("enroll notifies onHubConfigPersisted after persisting", async () => {
+    const home = await mkdtemp(path.join(tmpdir(), "paseo-ginit-notify-"));
+    const fetchImpl = vi.fn(async (url: string | URL | Request) => {
+      const href = url.toString();
+      if (href.endsWith("/api/paseo/enrollments")) {
+        return jsonResponse({
+          enrollment_id: "e",
+          ticket: "pet_x",
+          expires_at: "2099-01-01T00:00:00Z",
+        });
+      }
+      return jsonResponse({ device_id: "dev-9", token: "pht_9" });
+    }) as unknown as typeof fetch;
+    const onHubConfigPersisted = vi.fn(() => {
+      // The hub config must already be on disk when the callback fires.
+      expect(loadPersistedConfig(home).daemon?.hub?.token).toBe("pht_9");
+    });
+    const enroller = new GinitHubEnroller({
+      paseoHome: home,
+      logger: silentLogger,
+      fetchImpl,
+      onHubConfigPersisted,
+    });
+
+    await enroller.enroll("https://hub.example.org", "ginit_tok");
+    expect(onHubConfigPersisted).toHaveBeenCalledTimes(1);
+  });
+
   test("getStatus reflects persisted enrollment", async () => {
     const home = await mkdtemp(path.join(tmpdir(), "paseo-ginit-status-"));
     const enroller = new GinitHubEnroller({ paseoHome: home, logger: silentLogger });

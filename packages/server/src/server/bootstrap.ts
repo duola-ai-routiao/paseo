@@ -201,6 +201,7 @@ import {
 import { archiveAgentCommand } from "./agent/lifecycle-command.js";
 import { CreateAgentLifecycleDispatch } from "./agent/create-agent-lifecycle-dispatch.js";
 import { GinitHubEnroller } from "./hub/ginit-enroller.js";
+import { HubConnector } from "./hub/hub-connector.js";
 import {
   HubRelationshipController,
   type HubRelationshipClock,
@@ -1095,9 +1096,44 @@ export async function createPaseoDaemon(
       }),
   });
 
+  // Connects the daemon to the ginit Hub over WebSocket once enrolled; this
+  // is what makes the daemon (and its running services) visible on the hub.
+  const hubConnector = new HubConnector({
+    paseoHome: config.paseoHome,
+    logger,
+    workspaceSnapshotProvider: () =>
+      agentManager
+        .listAgents()
+        .filter((agent) => agent.internal !== true)
+        .map((agent) => ({
+          id: agent.id,
+          title: agent.config?.title ?? null,
+          cwd: agent.cwd,
+          provider: agent.provider ?? null,
+          status: agent.lifecycle,
+        })),
+  });
+  const pushHubWorkspaceSnapshot = () => hubConnector.pushWorkspaceSnapshot();
+  // Keep the hub's view of running services fresh as agents come and go.
+  // Coalesce bursts (stream events) into one snapshot push per tick.
+  let hubSnapshotPushQueued = false;
+  agentManager.subscribe(
+    (event) => {
+      if (event.type !== "agent_state") return;
+      if (hubSnapshotPushQueued) return;
+      hubSnapshotPushQueued = true;
+      setTimeout(() => {
+        hubSnapshotPushQueued = false;
+        pushHubWorkspaceSnapshot();
+      }, 0).unref?.();
+    },
+    { replayState: false },
+  );
+
   const hubGinitEnroller = new GinitHubEnroller({
     paseoHome: config.paseoHome,
     logger,
+    onHubConfigPersisted: () => hubConnector.connect(),
   });
 
   const loopService = new LoopService({
@@ -1538,6 +1574,7 @@ export async function createPaseoDaemon(
               hubGinitEnroller,
             );
             await hubRelationships.start();
+            hubConnector.start();
 
             if (relayEnabled) {
               const offer = await createConnectionOfferV2({
@@ -1599,6 +1636,7 @@ export async function createPaseoDaemon(
 
   const stop = async () => {
     await hubRelationships.stop();
+    hubConnector.stop();
     workspaceReconciliation.dispose();
     scriptHealthMonitor.stop();
     clearInterval(idleAgentCollectionTimer);

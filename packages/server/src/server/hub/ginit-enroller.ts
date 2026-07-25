@@ -32,6 +32,11 @@ export interface HubGinitEnrollerOptions {
   logger: GinitEnrollerLogger;
   /** Injectable for tests; defaults to global fetch. */
   fetchImpl?: typeof fetch;
+  /**
+   * Called right after the hub config is persisted so the daemon connects to
+   * the hub immediately instead of waiting for a restart.
+   */
+  onHubConfigPersisted?: () => void;
 }
 
 const EnrollmentTicketSchema = z.object({
@@ -147,6 +152,7 @@ export class GinitHubEnroller implements HubGinitEnroller {
     });
 
     this.logger.info({ deviceId: redemption.device_id, hubUrl }, "Ginit Hub enrollment complete");
+    this.options.onHubConfigPersisted?.();
     return { deviceId: redemption.device_id, hubUrl };
   }
 
