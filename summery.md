@@ -76,3 +76,39 @@
 ✅ 说明并修复了真实的 enrollment 幂等性缺陷：同一 daemon 重复飞书登录会重复 redeem 同一 device*id，ginit hub 正确返回 device_id already enrolled；Paseo 现在保留已有 pht* 凭证、刷新 ginit 用户 token，不再循环。
 ✅ Playwright 已自动打开飞书授权页并点击 Authorize，回调页面返回 completed；容器配置确认 ginitToken 已持久化，设备列表加载出多个 enrolled hosts，并标记当前 host online。
 ✅ 13 项 ginit-enroller 单测、daemon session 测试、typecheck、lint 均通过；8234 镜像已重建并健康运行。"Connect here" 当前因默认 host 地址尚未保存而禁用，属于预期行为。
+
+## 2026-07-26 ginit CLI 与 Paseo 跨服务器拓扑说明
+
+**用户需求 query**: 如果 ginit cli 执行和 paseo 不是在一个服务器，那么应该改动什么。
+
+**最终内容总结**:
+✅ 明确跨服务器关键点：ginit hub 只负责账号、设备发现和 workspace snapshot，不会把 A 服务器上的 CLI 进程、cwd、transcript 自动迁移到 B 服务器；Paseo relay 是 daemon↔client 数据通道，不是 CLI↔daemon 的导入通道。
+✅ 推荐拓扑：在运行 ginit CLI 的 A 服务器同时运行 Paseo daemon，A daemon enroll ginit hub 并启用 relay；B 服务器/远程 App 通过飞书登录发现并 relay 连接 A。这样 ginit CLI、工作目录、agent 进程和 Paseo daemon 都在同机，ginit 基本无需改动。
+✅ 如果强制 Paseo daemon 在 B，则 A 需要新增安全的远程导入 bridge（短期 token/mTLS/SSH tunnel、幂等 import API、transcript/cwd 上传），但只能显示历史；要继续控制运行中的 agent，agent 进程、工作目录和运行时必须在 B，实际应迁移 daemon/执行位置而不是只同步数据。
+
+## 2026-07-26 无公网地址且无法 SSH 时的跨服务器连接方案
+
+**用户需求 query**: 如果服务上没有公网地址，无法执行 ssh，那么怎么弄呢。
+
+**最终内容总结**:
+✅ 说明无需公网入站和 SSH，推荐使用反向出站 relay：在运行 ginit CLI 的服务器 A 上部署 Paseo daemon，daemon 主动连接 ginit hub 和 Paseo relay；远程 Paseo app/B 也连接 relay，relay 按 device_id/公钥路由加密流量。服务器 A 不需要公网 IP、端口映射或 SSH。
+✅ 需要区分网络能力：A 能出站访问互联网时用 relay；只能访问 ginit hub 时需让 ginit 提供数据面隧道或允许 A 访问 relay；完全无出站网络时公网飞书登录无法穿透，只能内网/VPN/网关。
+✅ 备选是 Cloudflare Tunnel、Tailscale/Headscale、FRP/自建反向隧道，但均应优先使用 E2E relay，避免暴露 6767 和长期密码。
+
+## 2026-07-26 对比《Paseo CLI in ginit.md》与当前配置
+
+**用户需求 query**: 阅读 `/home/alan/Documents/xwechat_files/wxid_gge9bnmt9jxo22_9b38/msg/file/2026-07/Paseo CLI in ginit.md`，当前的配置对比之前有什么差异？
+
+**最终内容总结**:
+✅ 已读取文档并对比当前开发配置与 8234 部署配置。文档是“同机 CLI 配置”方案：全局安装 Paseo CLI、terminalProfiles 增加 ginit、Paseo claude provider 直接执行 `ginit ccd`、IS_SANDBOX=1；当前部署已升级为 Docker + ginit Stop hook 自动导入：ginit CLI 在宿主机执行，hook 调 Paseo `agent import`，容器挂载宿主目录/transcripts，并由 daemon hub 同步。
+✅ 当前部署新增 relay、hub ginit token 缓存、ginit hub 账号设备列表能力；daemon 内部端口 6767 映射为外部 8234，app baseUrl 仍为 app.paseo.sh。当前 provider 使用容器内 `/opt/ginit-runtime/bin/claude`，不是文档中的 `ginit ccd`，因为 ginit 会话已经由 hook 导入，Paseo 只需要本地 Claude runtime 执行/恢复。
+✅ 文档中的 mcp、autoArchive、terminal hooks、appendSystemPrompt、terminalProfiles、禁用 provider/features 等显式配置在当前部署 config 中不再出现，多数回退到默认值；当前 compose 通过挂载、环境密码、自动导入脚本承担了文档原来需要手工配置的功能。
+
+## 2026-07-26 飞书 Welcome 自动发现主机第一阶段实现
+
+**用户需求 query**: 帮我执行修改，并帮我进行测试；实现飞书登录后自动显示所有机器并通过 relay 连接，不再填写 host。
+
+**最终内容总结**:
+✅ Paseo Welcome 页新增独立 Ginit Feishu 登录组件：device flow 完成飞书授权后请求 `/api/paseo/devices`，显示账号下设备，并对 connection-ready 在线设备自动使用 relay metadata 创建 HostProfile；原 direct/pairing 入口仍保留。
+✅ ginit Hub 新增 0020 relay metadata migration，设备 enrollment 保存 relay endpoint/TLS，设备列表返回 public_key、relay metadata 和 connection_ready；ginit CLI Paseo attach 增加 relay metadata 上报和已存在设备的幂等检查。
+✅ 测试通过：ginit Hub Python Paseo 测试 2/2、ginit CLI Go 测试通过、Paseo typecheck 通过、相关 app lint 通过、git diff --check 通过。真实跨端飞书授权/relay E2E 尚未运行；Web 直接调用 ginit API 还需要生产 CORS 或 redirect 适配后再做浏览器验证。

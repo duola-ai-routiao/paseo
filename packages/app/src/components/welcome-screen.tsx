@@ -1,3 +1,4 @@
+import { GinitFeishuWelcome } from "./ginit-feishu-welcome";
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
 import { Pressable, Text, View, ScrollView } from "react-native";
@@ -274,6 +275,8 @@ export function WelcomeScreen({ onHostAdded }: WelcomeScreenProps) {
               </Pressable>
             ) : null}
           </View>
+
+          <GinitFeishuWelcome />
 
           <View style={styles.actions}>
             {actions.map((action) => (
