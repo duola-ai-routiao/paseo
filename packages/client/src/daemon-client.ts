@@ -99,6 +99,7 @@ import type {
   PaseoConfigRevision,
   WorkspaceCreateRequest,
   WorkspaceRecoveryState,
+  HubListDeviceEntry,
 } from "@getpaseo/protocol/messages";
 import type {
   AgentPermissionRequest,
@@ -4422,6 +4423,19 @@ export class DaemonClient {
       requestId,
       message: { type: "hub.device_poll.request", ginitBaseUrl, deviceCode },
       responseType: "hub.device_poll.response",
+    });
+  }
+
+  async hubListDevices(requestId?: string): Promise<{
+    requestId: string;
+    success: boolean;
+    devices: HubListDeviceEntry[];
+    error: string | null;
+  }> {
+    return this.sendCorrelatedSessionRequest({
+      requestId,
+      message: { type: "hub.list_devices.request" },
+      responseType: "hub.list_devices.response",
     });
   }
 

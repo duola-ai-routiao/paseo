@@ -1946,6 +1946,7 @@ export class Session {
     }
   }
 
+  // eslint-disable-next-line complexity
   private dispatchAgentConfigMessage(msg: SessionInboundMessage): Promise<void> | undefined {
     switch (msg.type) {
       case "set_agent_mode_request":
@@ -1978,6 +1979,8 @@ export class Session {
         return this.daemonSession.handleHubDeviceStart(msg);
       case "hub.device_poll.request":
         return this.daemonSession.handleHubDevicePoll(msg);
+      case "hub.list_devices.request":
+        return this.daemonSession.handleHubListDevices(msg);
       case "diagnostics.request":
         return this.daemonSession.handleDiagnosticsRequest(msg);
       case "daemon.update.request":

@@ -1178,6 +1178,11 @@ export const HubDevicePollRequestSchema = z.object({
   deviceCode: z.string().min(1),
 });
 
+export const HubListDevicesRequestSchema = z.object({
+  type: z.literal("hub.list_devices.request"),
+  requestId: z.string(),
+});
+
 export const DiagnosticsRequestSchema = z.object({
   type: z.literal("diagnostics.request"),
   requestId: z.string(),
@@ -2461,6 +2466,7 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   HubGetEnrollStatusRequestSchema,
   HubDeviceStartRequestSchema,
   HubDevicePollRequestSchema,
+  HubListDevicesRequestSchema,
   DiagnosticsRequestSchema,
   GetDaemonConfigRequestMessageSchema,
   SetDaemonConfigRequestMessageSchema,
@@ -2593,6 +2599,7 @@ export type HubLoginGinitRequest = z.infer<typeof HubLoginGinitRequestSchema>;
 export type HubGetEnrollStatusRequest = z.infer<typeof HubGetEnrollStatusRequestSchema>;
 export type HubDeviceStartRequest = z.infer<typeof HubDeviceStartRequestSchema>;
 export type HubDevicePollRequest = z.infer<typeof HubDevicePollRequestSchema>;
+export type HubListDevicesRequest = z.infer<typeof HubListDevicesRequestSchema>;
 
 // ============================================================================
 // Session Outbound Messages (Session emits these)
@@ -3806,6 +3813,25 @@ export const HubDevicePollResponseSchema = z.object({
     requestId: z.string(),
     status: z.enum(["pending", "completed"]),
     token: z.string().nullable(),
+  }),
+});
+
+export const HubListDeviceEntrySchema = z.object({
+  deviceId: z.string(),
+  daemonId: z.string(),
+  name: z.string(),
+  status: z.string(),
+  lastSeenAt: z.string().nullable(),
+  isSelf: z.boolean(),
+});
+
+export const HubListDevicesResponseSchema = z.object({
+  type: z.literal("hub.list_devices.response"),
+  payload: z.object({
+    requestId: z.string(),
+    success: z.boolean(),
+    devices: z.array(HubListDeviceEntrySchema),
+    error: z.string().nullable(),
   }),
 });
 
@@ -5221,6 +5247,7 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   HubGetEnrollStatusResponseSchema,
   HubDeviceStartResponseSchema,
   HubDevicePollResponseSchema,
+  HubListDevicesResponseSchema,
   DiagnosticsResponseSchema,
   GetDaemonConfigResponseMessageSchema,
   SetDaemonConfigResponseMessageSchema,
@@ -5336,6 +5363,8 @@ export type HubLoginGinitResponse = z.infer<typeof HubLoginGinitResponseSchema>;
 export type HubGetEnrollStatusResponse = z.infer<typeof HubGetEnrollStatusResponseSchema>;
 export type HubDeviceStartResponse = z.infer<typeof HubDeviceStartResponseSchema>;
 export type HubDevicePollResponse = z.infer<typeof HubDevicePollResponseSchema>;
+export type HubListDeviceEntry = z.infer<typeof HubListDeviceEntrySchema>;
+export type HubListDevicesResponse = z.infer<typeof HubListDevicesResponseSchema>;
 
 // Type exports for individual message types
 export type ActivityLogMessage = z.infer<typeof ActivityLogMessageSchema>;

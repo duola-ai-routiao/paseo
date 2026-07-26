@@ -222,3 +222,7 @@ npm run cli -- ls -a -g --host localhost:6769
 1. **容器内 cwd 必须存在**：import 校验 cwd，宿主路径 `/tmp/...` 在容器里不存在会报 `Working directory does not exist`；挂载 `/home/alan` 后真实路径即可直接通过，workspace 软链接方式（指到 /tmp）在容器内 dangling 不可用。
 2. **旧 marker 会跳过导入**：换目标 daemon 后要清 `~/.cache/ginit-paseo-imported/` 里对应的 marker 或换新会话测试。
 3. **hub 偶发 1006 断线属正常**：connector 有指数退避自动重连，不需要处理。
+
+## Q: 飞书重复登录出现 device_id already enrolled，是否测试问题？
+
+W: 这是真实的幂等性缺陷，不是测试造出来的问题。第一次 enrollment 会把当前 daemon 的 device*id 注册到 ginit hub；重复登录仍然使用相同 device_id redeem，hub 正确拒绝重复注册。修复是在 daemon enroll 中识别该明确的 400 错误，保留已有 pht* 设备凭证，仅刷新 ginitBaseUrl/ginitToken；同时 UI 提示旧设备需重新登录而不无限循环。测试覆盖首次 enrollment、重复 enrollment、设备列表 token 缺失和设备列表成功场景；Playwright 通过真实飞书授权验证了重复登录后的 token 持久化和设备列表加载。

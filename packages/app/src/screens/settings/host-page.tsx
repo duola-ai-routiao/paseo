@@ -14,7 +14,7 @@ import {
 import type { TFunction } from "i18next";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Alert, Pressable, Text, View } from "react-native";
+import { Alert, Pressable, Text, TextInput, View } from "react-native";
 import { StyleSheet, useUnistyles, withUnistyles } from "react-native-unistyles";
 import type { TerminalProfile } from "@getpaseo/protocol/messages";
 import {
@@ -53,13 +53,18 @@ import {
   useHostRuntimeSnapshot,
   useHosts,
 } from "@/runtime/host-runtime";
+import {
+  connectionFromListen,
+  hostHasConnection,
+  type HostConnection,
+  type HostProfile,
+} from "@/types/host-connection";
 import { ProvidersSection } from "@/screens/settings/providers-section";
 import { ProviderUsageSettingsSection } from "@/provider-usage/settings-section";
 import { useProviderUsage } from "@/provider-usage/use-provider-usage";
 import { SettingsSection } from "@/screens/settings/settings-section";
 import { useSessionStore } from "@/stores/session-store";
 import { settingsStyles } from "@/styles/settings";
-import type { HostConnection, HostProfile } from "@/types/host-connection";
 import { confirmDialog } from "@/utils/confirm-dialog";
 import { isVersionMismatch } from "@/desktop/updates/desktop-updates";
 import { resolveAppVersion } from "@/utils/app-version";
@@ -421,8 +426,41 @@ export function HostRenameButton({ host }: { host: HostProfile }) {
   );
 }
 
+interface HubListedDevice {
+  deviceId: string;
+  daemonId: string;
+  name: string;
+  status: string;
+  lastSeenAt: string | null;
+  isSelf: boolean;
+}
+
+const LAST_DEFAULT_HOST_STORAGE_KEY = "ginit.hub.lastDefaultHost";
+
+async function loadLastDefaultHostListen(): Promise<string | null> {
+  try {
+    const { default: AsyncStorage } = await import("@react-native-async-storage/async-storage");
+    const raw = await AsyncStorage.getItem(LAST_DEFAULT_HOST_STORAGE_KEY);
+    const trimmed = raw?.trim() ?? "";
+    return trimmed.length > 0 ? trimmed : null;
+  } catch {
+    return null;
+  }
+}
+
+async function saveLastDefaultHostListen(listen: string): Promise<void> {
+  try {
+    const { default: AsyncStorage } = await import("@react-native-async-storage/async-storage");
+    await AsyncStorage.setItem(LAST_DEFAULT_HOST_STORAGE_KEY, listen);
+  } catch {
+    // best-effort convenience only
+  }
+}
+
 function GinitHubSection({ serverId }: { serverId: string }) {
   const daemonClient = useHostRuntimeClient(serverId);
+  const hosts = useHosts();
+  const { probeAndUpsertDirectConnection } = useHostMutations();
   const [enrollStatus, setEnrollStatus] = useState<{
     enrolled: boolean;
     deviceId: string | null;
@@ -430,16 +468,50 @@ function GinitHubSection({ serverId }: { serverId: string }) {
   } | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [hubDevices, setHubDevices] = useState<HubListedDevice[] | null>(null);
+  const [isDevicesLoading, setIsDevicesLoading] = useState(false);
+  const [defaultHostListen, setDefaultHostListen] = useState("");
+  const [isSavingDefault, setIsSavingDefault] = useState(false);
+  const [applyingDeviceId, setApplyingDeviceId] = useState<string | null>(null);
+  const [appliedDeviceId, setAppliedDeviceId] = useState<string | null>(null);
+
+  const refreshDevices = useCallback(async () => {
+    if (!daemonClient) return;
+    setIsDevicesLoading(true);
+    try {
+      const res = await daemonClient.hubListDevices();
+      if (res.success) {
+        setHubDevices(res.devices);
+      } else {
+        setErrorMessage(res.error ?? "Failed to load enrolled hosts");
+      }
+    } catch (error) {
+      console.warn("[GinitHubSection] Failed to list hub devices", error);
+    } finally {
+      setIsDevicesLoading(false);
+    }
+  }, [daemonClient]);
 
   useEffect(() => {
     if (!daemonClient) return;
     daemonClient
       .hubGetEnrollStatus()
-      .then((res) =>
-        setEnrollStatus({ enrolled: res.enrolled, deviceId: res.deviceId, hubUrl: res.hubUrl }),
-      )
+      .then((res) => {
+        setEnrollStatus({ enrolled: res.enrolled, deviceId: res.deviceId, hubUrl: res.hubUrl });
+        if (res.enrolled) {
+          void refreshDevices();
+        }
+        return undefined;
+      })
       .catch((err) => console.warn("[GinitHubSection] Failed to fetch status", err));
-  }, [daemonClient]);
+  }, [daemonClient, refreshDevices]);
+
+  useEffect(() => {
+    void loadLastDefaultHostListen().then((listen) => {
+      if (listen) setDefaultHostListen(listen);
+      return undefined;
+    });
+  }, []);
 
   const handleLogin = useCallback(async () => {
     if (!daemonClient) return;
@@ -477,12 +549,49 @@ function GinitHubSection({ serverId }: { serverId: string }) {
         deviceId: enrollRes.deviceId,
         hubUrl: enrollRes.hubUrl,
       });
+      // Enrollment persists a fresh account token, so the device list works
+      // again even if a previous token had expired or was never cached.
+      void refreshDevices();
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : String(error));
     } finally {
       setIsLoading(false);
     }
-  }, [daemonClient]);
+  }, [daemonClient, refreshDevices]);
+
+  const handleSaveDefault = useCallback(async () => {
+    const trimmed = defaultHostListen.trim();
+    if (!trimmed) return;
+    setIsSavingDefault(true);
+    setErrorMessage(null);
+    try {
+      await saveLastDefaultHostListen(trimmed);
+    } finally {
+      setIsSavingDefault(false);
+    }
+  }, [defaultHostListen]);
+
+  const handleApplyDevice = useCallback(
+    async (device: HubListedDevice) => {
+      const trimmed = defaultHostListen.trim();
+      if (!trimmed) {
+        setErrorMessage("Set the default host address first (e.g. 192.168.3.2:8234)");
+        return;
+      }
+      setApplyingDeviceId(device.deviceId);
+      setErrorMessage(null);
+      try {
+        await probeAndUpsertDirectConnection({ endpoint: trimmed, label: device.name });
+        await saveLastDefaultHostListen(trimmed);
+        setAppliedDeviceId(device.deviceId);
+      } catch (error) {
+        setErrorMessage(error instanceof Error ? error.message : String(error));
+      } finally {
+        setApplyingDeviceId(null);
+      }
+    },
+    [defaultHostListen, probeAndUpsertDirectConnection],
+  );
 
   if (!daemonClient) return null;
 
@@ -493,6 +602,24 @@ function GinitHubSection({ serverId }: { serverId: string }) {
           <View style={ginitHubStyles.container}>
             <Text style={ginitHubStyles.enrolledLabel}>Device enrolled</Text>
             <Text style={ginitHubStyles.deviceId}>{enrollStatus.deviceId}</Text>
+
+            <GinitDeviceList
+              devices={hubDevices}
+              isLoading={isDevicesLoading}
+              hosts={hosts}
+              applyingDeviceId={applyingDeviceId}
+              appliedDeviceId={appliedDeviceId}
+              defaultHostListen={defaultHostListen}
+              isSavingDefault={isSavingDefault}
+              needsRelogin={errorMessage !== null && hubDevices === null}
+              isLoggingIn={isLoading}
+              onChangeDefaultListen={setDefaultHostListen}
+              onSaveDefault={handleSaveDefault}
+              onRefresh={refreshDevices}
+              onRelogin={handleLogin}
+              onApply={handleApplyDevice}
+            />
+            {errorMessage ? <Text style={ginitHubStyles.errorText}>{errorMessage}</Text> : null}
           </View>
         ) : (
           <View style={ginitHubStyles.container}>
@@ -504,6 +631,183 @@ function GinitHubSection({ serverId }: { serverId: string }) {
         )}
       </View>
     </SettingsSection>
+  );
+}
+
+function GinitDeviceRow(props: {
+  device: HubListedDevice;
+  canApply: boolean;
+  isApplying: boolean;
+  isApplied: boolean;
+  onApply: (device: HubListedDevice) => void;
+}) {
+  const { device, canApply, isApplying, isApplied, onApply } = props;
+  const handlePress = useCallback(() => {
+    onApply(device);
+  }, [onApply, device]);
+
+  let applyLabel = "Connect here";
+  if (isApplied) {
+    applyLabel = "Added";
+  } else if (isApplying) {
+    applyLabel = "Adding...";
+  }
+
+  return (
+    <View style={ginitHubStyles.deviceRow}>
+      <View style={ginitHubStyles.deviceInfo}>
+        <Text style={ginitHubStyles.deviceName} numberOfLines={1}>
+          {device.name}
+          {device.isSelf ? " (this host)" : ""}
+        </Text>
+        <Text style={ginitHubStyles.deviceMeta} numberOfLines={1}>
+          {device.status} · {device.daemonId.slice(0, 8)}
+        </Text>
+      </View>
+      <Button
+        variant="outline"
+        size="sm"
+        onPress={handlePress}
+        disabled={!canApply || isApplying || isApplied}
+        testID={`ginit-hub-apply-${device.deviceId}`}
+      >
+        {applyLabel}
+      </Button>
+    </View>
+  );
+}
+
+function GinitDeviceList(props: {
+  devices: HubListedDevice[] | null;
+  isLoading: boolean;
+  hosts: HostProfile[];
+  applyingDeviceId: string | null;
+  appliedDeviceId: string | null;
+  defaultHostListen: string;
+  isSavingDefault: boolean;
+  needsRelogin: boolean;
+  isLoggingIn: boolean;
+  onChangeDefaultListen: (value: string) => void;
+  onSaveDefault: () => void;
+  onRefresh: () => void;
+  onRelogin: () => void;
+  onApply: (device: HubListedDevice) => void;
+}) {
+  const {
+    devices,
+    isLoading,
+    hosts,
+    applyingDeviceId,
+    appliedDeviceId,
+    defaultHostListen,
+    isSavingDefault,
+    needsRelogin,
+    isLoggingIn,
+    onChangeDefaultListen,
+    onSaveDefault,
+    onRefresh,
+    onRelogin,
+    onApply,
+  } = props;
+
+  const defaultConnection = useMemo(() => {
+    const trimmed = defaultHostListen.trim();
+    return trimmed ? connectionFromListen(trimmed) : null;
+  }, [defaultHostListen]);
+
+  const defaultAlreadyAdded = useMemo(() => {
+    if (!defaultConnection) return false;
+    return hosts.some((host) => hostHasConnection(host, defaultConnection));
+  }, [hosts, defaultConnection]);
+
+  const handleRefresh = useCallback(() => {
+    void onRefresh();
+  }, [onRefresh]);
+
+  const handleSaveDefaultPress = useCallback(() => {
+    void onSaveDefault();
+  }, [onSaveDefault]);
+
+  const handleReloginPress = useCallback(() => {
+    void onRelogin();
+  }, [onRelogin]);
+
+  return (
+    <View style={ginitHubStyles.deviceListContainer} testID="ginit-hub-device-list">
+      <View style={ginitHubStyles.deviceListHeader}>
+        <Text style={ginitHubStyles.deviceListTitle}>My enrolled hosts</Text>
+        <Button
+          variant="ghost"
+          size="sm"
+          onPress={handleRefresh}
+          disabled={isLoading}
+          testID="ginit-hub-refresh-devices"
+        >
+          {isLoading ? "Refreshing..." : "Refresh"}
+        </Button>
+      </View>
+
+      {devices && devices.length > 0 ? (
+        devices.map((device) => (
+          <GinitDeviceRow
+            key={device.deviceId}
+            device={device}
+            canApply={defaultConnection !== null}
+            isApplying={applyingDeviceId === device.deviceId}
+            isApplied={
+              appliedDeviceId === device.deviceId || (device.isSelf && defaultAlreadyAdded)
+            }
+            onApply={onApply}
+          />
+        ))
+      ) : (
+        <View style={ginitHubStyles.deviceEmptyState}>
+          <Text style={ginitHubStyles.deviceMeta}>
+            {isLoading ? "Loading devices..." : "No enrolled hosts found for this account."}
+          </Text>
+          {needsRelogin ? (
+            <Button
+              variant="outline"
+              size="sm"
+              onPress={handleReloginPress}
+              disabled={isLoggingIn}
+              testID="ginit-hub-relogin"
+            >
+              {isLoggingIn ? "Logging in..." : "Login with Feishu again"}
+            </Button>
+          ) : null}
+        </View>
+      )}
+
+      <View style={ginitHubStyles.defaultHostSection}>
+        <Text style={ginitHubStyles.deviceListTitle}>Default host address</Text>
+        <Text style={ginitHubStyles.deviceMeta}>
+          New Feishu logins connect here automatically — no host or password needed.
+        </Text>
+        <View style={ginitHubStyles.defaultHostRow}>
+          <View style={ginitHubStyles.defaultHostInputWrapper}>
+            <TextInput
+              style={ginitHubStyles.defaultHostInput}
+              value={defaultHostListen}
+              onChangeText={onChangeDefaultListen}
+              placeholder="192.168.3.2:8234"
+              autoCapitalize="none"
+              autoCorrect={false}
+              testID="ginit-hub-default-host-input"
+            />
+          </View>
+          <Button
+            variant="outline"
+            size="sm"
+            onPress={handleSaveDefaultPress}
+            disabled={isSavingDefault || defaultHostListen.trim().length === 0}
+            testID="ginit-hub-save-default-host"
+          >
+            {isSavingDefault ? "Saving..." : "Set default"}
+          </Button>
+        </View>
+      </View>
+    </View>
   );
 }
 
@@ -1950,6 +2254,67 @@ const ginitHubStyles = StyleSheet.create((theme) => ({
     fontSize: theme.fontSize.xs,
     color: theme.colors.destructive,
     marginTop: theme.spacing[2],
+  },
+  deviceListContainer: {
+    marginTop: theme.spacing[4],
+    gap: theme.spacing[2],
+  },
+  deviceListHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  deviceListTitle: {
+    fontSize: theme.fontSize.sm,
+    fontWeight: theme.fontWeight.medium,
+    color: theme.colors.foreground,
+  },
+  deviceRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[2],
+    paddingVertical: theme.spacing[2],
+    borderTopWidth: 1,
+    borderTopColor: theme.colors.border,
+  },
+  deviceInfo: {
+    flex: 1,
+    gap: 2,
+  },
+  deviceName: {
+    fontSize: theme.fontSize.sm,
+    color: theme.colors.foreground,
+  },
+  deviceMeta: {
+    fontSize: theme.fontSize.xs,
+    color: theme.colors.foregroundMuted,
+  },
+  deviceEmptyState: {
+    gap: theme.spacing[2],
+    alignItems: "flex-start",
+  },
+  defaultHostSection: {
+    marginTop: theme.spacing[3],
+    gap: theme.spacing[2],
+  },
+  defaultHostRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[2],
+  },
+  defaultHostInputWrapper: {
+    flex: 1,
+    borderRadius: theme.borderRadius.md,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.surface0,
+    overflow: "hidden",
+  },
+  defaultHostInput: {
+    color: theme.colors.foreground,
+    fontSize: theme.fontSize.sm,
+    paddingVertical: theme.spacing[2],
+    paddingHorizontal: theme.spacing[3],
   },
 }));
 

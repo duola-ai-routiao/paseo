@@ -66,6 +66,8 @@ describe.skipIf(process.platform === "win32")("GinitHubEnroller", () => {
       url: "wss://ginit.example.com/ws/v1/paseo",
       deviceId: "dev-123",
       token: "pht_secret",
+      ginitBaseUrl: "https://ginit.example.com",
+      ginitToken: "ginit_token",
     });
   });
 
@@ -134,7 +136,7 @@ describe.skipIf(process.platform === "win32")("GinitHubEnroller", () => {
           expires_at: "2099-01-01T00:00:00Z",
         });
       }
-      return new Response("device_id already enrolled", { status: 400 });
+      return new Response("some other redeem error", { status: 400 });
     }) as unknown as typeof fetch;
 
     const enroller = new GinitHubEnroller({ paseoHome: home, logger: silentLogger, fetchImpl });
@@ -142,6 +144,38 @@ describe.skipIf(process.platform === "win32")("GinitHubEnroller", () => {
       /redemption failed/i,
     );
     expect(loadPersistedConfig(home).daemon?.hub).toBeUndefined();
+  });
+
+  test("re-enroll on an already-enrolled device keeps credentials and refreshes account token", async () => {
+    const home = await mkdtemp(path.join(tmpdir(), "paseo-ginit-reenroll-"));
+    let redeemCalls = 0;
+    const fetchImpl = vi.fn(async (url: string | URL | Request) => {
+      const href = url.toString();
+      if (href.endsWith("/api/paseo/enrollments")) {
+        return jsonResponse({
+          enrollment_id: "e",
+          ticket: "pet_x",
+          expires_at: "2099-01-01T00:00:00Z",
+        });
+      }
+      redeemCalls += 1;
+      if (redeemCalls === 1) {
+        return jsonResponse({ device_id: "dev-123", token: "pht_secret" });
+      }
+      return new Response('{"error":"device_id already enrolled"}', { status: 400 });
+    }) as unknown as typeof fetch;
+
+    const enroller = new GinitHubEnroller({ paseoHome: home, logger: silentLogger, fetchImpl });
+    await enroller.enroll("https://hub.example.org", "ginit_tok_first");
+
+    const result = await enroller.enroll("https://hub.example.org", "ginit_tok_second");
+    expect(result.deviceId).toBe("dev-123");
+
+    const hub = loadPersistedConfig(home).daemon?.hub;
+    expect(hub?.deviceId).toBe("dev-123");
+    expect(hub?.token).toBe("pht_secret");
+    expect(hub?.ginitToken).toBe("ginit_tok_second");
+    expect(hub?.ginitBaseUrl).toBe("https://hub.example.org");
   });
 
   test("enroll surfaces enrollment auth failure", async () => {
@@ -223,5 +257,101 @@ describe.skipIf(process.platform === "win32")("GinitHubEnroller", () => {
     await expect(enroller.devicePoll("https://ginit.example.com", "dc_abc")).rejects.toThrow(
       /without a token/i,
     );
+  });
+
+  test("listDevices rejects when the daemon is not enrolled", async () => {
+    const home = await mkdtemp(path.join(tmpdir(), "paseo-ginit-list-none-"));
+    const enroller = new GinitHubEnroller({ paseoHome: home, logger: silentLogger });
+    await expect(enroller.listDevices()).rejects.toThrow(/re-login/i);
+  });
+
+  test("listDevices calls the ginit devices API with the cached token and marks self", async () => {
+    const home = await mkdtemp(path.join(tmpdir(), "paseo-ginit-list-"));
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const fetchImpl = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const href = url.toString();
+      calls.push({ url: href, init });
+      if (href.endsWith("/api/paseo/enrollments")) {
+        return jsonResponse({
+          enrollment_id: "e",
+          ticket: "pet_x",
+          expires_at: "2099-01-01T00:00:00Z",
+        });
+      }
+      if (href.endsWith("/api/paseo/enrollments/redeem")) {
+        return jsonResponse({ device_id: "dev-self", token: "pht_self" });
+      }
+      if (href.endsWith("/api/paseo/devices")) {
+        return jsonResponse({
+          items: [
+            {
+              device_id: "dev-self",
+              daemon_id: "daemon-a",
+              name: "paseo-self",
+              status: "online",
+              last_seen_at: "2026-07-26T00:00:00Z",
+            },
+            {
+              device_id: "dev-other",
+              daemon_id: "daemon-b",
+              name: "paseo-other",
+              status: "offline",
+            },
+          ],
+        });
+      }
+      throw new Error(`unexpected url ${href}`);
+    }) as unknown as typeof fetch;
+
+    const enroller = new GinitHubEnroller({ paseoHome: home, logger: silentLogger, fetchImpl });
+    await enroller.enroll("https://ginit.example.com/", "ginit_user_tok");
+
+    const result = await enroller.listDevices();
+    expect(result.devices).toEqual([
+      {
+        deviceId: "dev-self",
+        daemonId: "daemon-a",
+        name: "paseo-self",
+        status: "online",
+        lastSeenAt: "2026-07-26T00:00:00Z",
+        isSelf: true,
+      },
+      {
+        deviceId: "dev-other",
+        daemonId: "daemon-b",
+        name: "paseo-other",
+        status: "offline",
+        lastSeenAt: null,
+        isSelf: false,
+      },
+    ]);
+
+    const listCall = calls.find((c) => c.url.endsWith("/api/paseo/devices"));
+    expect(listCall?.url).toBe("https://ginit.example.com/api/paseo/devices");
+    expect((listCall?.init?.headers as Record<string, string> | undefined)?.authorization).toBe(
+      "Bearer ginit_user_tok",
+    );
+  });
+
+  test("listDevices surfaces API failure", async () => {
+    const home = await mkdtemp(path.join(tmpdir(), "paseo-ginit-list-fail-"));
+    const fetchImpl = vi.fn(async (url: string | URL | Request) => {
+      const href = url.toString();
+      if (href.endsWith("/api/paseo/enrollments")) {
+        return jsonResponse({
+          enrollment_id: "e",
+          ticket: "pet_x",
+          expires_at: "2099-01-01T00:00:00Z",
+        });
+      }
+      if (href.endsWith("/api/paseo/enrollments/redeem")) {
+        return jsonResponse({ device_id: "dev-self", token: "pht_self" });
+      }
+      return new Response("unauthorized", { status: 401, statusText: "Unauthorized" });
+    }) as unknown as typeof fetch;
+
+    const enroller = new GinitHubEnroller({ paseoHome: home, logger: silentLogger, fetchImpl });
+    await enroller.enroll("https://ginit.example.com/", "ginit_user_tok");
+    await expect(enroller.listDevices()).rejects.toThrow(/device list failed \(401/i);
   });
 });

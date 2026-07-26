@@ -60,3 +60,19 @@
 改动:① paseo-deploy 容器 config 增加 agents.providers.claude 指向挂载的 ginit claude 运行时;② docker-compose 新增挂载 /opt/ginit-runtime(claude 二进制)、/home/alan(任意目录会话可导入)、/home/alan/.claude→/home/paseo/.claude(transcript 可见);③ 全局注册 Stop hook。
 端到端验证通过:在 ~/ccd-e2e-test 跑 ginit ccd,会话自动出现在 8234 的 agent 列表(source=ginit-auto),容器日志确认 hub.workspace.snapshot 从 2 增至 3 并完成推送。
 远程登录方式:局域网直接开 http://192.168.3.2:8234(密码同 PASEO_PASSWORD);公网通过 relay(app.paseo.sh 添加 serverId srv_nvcX2Px9Rmfh + 密码),relay 连接已验证正常。
+
+## 2026-07-26 飞书登录后自动连接 host 的方案梳理
+
+**用户需求 query**: 如果飞书登录 paseo 的时候，自动就会自动连接哪个host 这个怎么配置，你先思考梳理。有哪些实现方式。就是后续不需要输入host和密码。只要飞书账户登录即可。
+
+**最终内容总结**:
+✅ 已输出方案梳理（纯分析，无代码改动）。核心结论：推荐 A2 —— 复用现有 daemon→ginit hub 注册 + paseo relay E2E 通道，ginit hub 新增 3 个客户端 API（设备列表、在线状态、一次性配对凭证），app 侧加飞书登录页 + 自动建 HostProfile + 凭证刷新。次选 A1（hub 全隧道转发，用户最省事但 hub 变数据面且需扩大 hub.execution.\* 授权面）、方案 B（一次性配对深链接/二维码，改动最小但非真正"飞书登录"，可作过渡）。
+
+## 2026-07-26 飞书重复登录修复与 Playwright 验证
+
+**用户需求 query**: 飞书帮我自动点击按钮，Playwright 点击按钮；并询问 device_id already enrolled 是否是测试问题以及正常测试方式。
+
+**最终内容总结**:
+✅ 说明并修复了真实的 enrollment 幂等性缺陷：同一 daemon 重复飞书登录会重复 redeem 同一 device*id，ginit hub 正确返回 device_id already enrolled；Paseo 现在保留已有 pht* 凭证、刷新 ginit 用户 token，不再循环。
+✅ Playwright 已自动打开飞书授权页并点击 Authorize，回调页面返回 completed；容器配置确认 ginitToken 已持久化，设备列表加载出多个 enrolled hosts，并标记当前 host online。
+✅ 13 项 ginit-enroller 单测、daemon session 测试、typecheck、lint 均通过；8234 镜像已重建并健康运行。"Connect here" 当前因默认 host 地址尚未保存而禁用，属于预期行为。

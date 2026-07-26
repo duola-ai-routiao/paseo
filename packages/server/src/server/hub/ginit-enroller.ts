@@ -25,6 +25,16 @@ export interface HubGinitEnroller {
     ginitBaseUrl: string,
     deviceCode: string,
   ): Promise<{ status: "pending" | "completed"; token: string | null }>;
+  listDevices(): Promise<{ devices: HubGinitDeviceEntry[] }>;
+}
+
+export interface HubGinitDeviceEntry {
+  deviceId: string;
+  daemonId: string;
+  name: string;
+  status: string;
+  lastSeenAt: string | null;
+  isSelf: boolean;
 }
 
 export interface HubGinitEnrollerOptions {
@@ -60,6 +70,18 @@ const DeviceStartResultSchema = z.object({
 const DevicePollResultSchema = z.object({
   status: z.enum(["pending", "completed"]),
   token: z.string().min(1).optional(),
+});
+
+const DeviceListItemSchema = z.object({
+  device_id: z.string(),
+  daemon_id: z.string(),
+  name: z.string(),
+  status: z.string(),
+  last_seen_at: z.string().nullable().optional(),
+});
+
+const DeviceListResultSchema = z.object({
+  items: z.array(DeviceListItemSchema),
 });
 
 /**
@@ -129,6 +151,34 @@ export class GinitHubEnroller implements HubGinitEnroller {
     });
     if (!redeemRes.ok) {
       const detail = await redeemRes.text().catch(() => "");
+      // A re-login on an already-enrolled device fails redeem with
+      // "device_id already enrolled". Keep the existing device credentials
+      // and only refresh the cached account token + base URL below.
+      if (redeemRes.status === 400 && detail.includes("device_id already enrolled")) {
+        const hubUrl = toHubWebSocketUrl(normalized);
+        const config = loadPersistedConfig(this.options.paseoHome);
+        const existingHub = config.daemon?.hub;
+        if (existingHub?.enabled && existingHub.deviceId && existingHub.token) {
+          savePersistedConfig(this.options.paseoHome, {
+            ...config,
+            daemon: {
+              ...config.daemon,
+              hub: {
+                ...existingHub,
+                url: existingHub.url ?? hubUrl,
+                ginitBaseUrl: normalized,
+                ginitToken,
+              },
+            },
+          });
+          this.logger.info(
+            { deviceId: existingHub.deviceId },
+            "Ginit re-login: kept existing device credentials, refreshed account token",
+          );
+          this.options.onHubConfigPersisted?.();
+          return { deviceId: existingHub.deviceId, hubUrl: existingHub.url ?? hubUrl };
+        }
+      }
       throw new Error(
         `Ginit enrollment redemption failed (${redeemRes.status})${detail ? `: ${detail}` : ""}`,
       );
@@ -136,6 +186,8 @@ export class GinitHubEnroller implements HubGinitEnroller {
     const redemption = RedemptionResultSchema.parse(await redeemRes.json());
 
     // Step 3: persist hub config. The bootstrap poller connects automatically.
+    // The ginit user token is cached alongside so clients can proxy account
+    // APIs (device list) through this daemon without re-running device auth.
     const hubUrl = toHubWebSocketUrl(normalized);
     const config = loadPersistedConfig(this.options.paseoHome);
     savePersistedConfig(this.options.paseoHome, {
@@ -147,6 +199,8 @@ export class GinitHubEnroller implements HubGinitEnroller {
           url: hubUrl,
           deviceId: redemption.device_id,
           token: redemption.token,
+          ginitBaseUrl: normalized,
+          ginitToken,
         },
       },
     });
@@ -215,5 +269,38 @@ export class GinitHubEnroller implements HubGinitEnroller {
       return { status: "completed", token: data.token };
     }
     return { status: "pending", token: null };
+  }
+
+  /**
+   * Lists the paseo devices bound to the same ginit account this daemon
+   * enrolled with, using the cached user token. `isSelf` marks this daemon's
+   * own row so clients can tell "the host I'm connected to" apart from the
+   * other enrolled hosts.
+   */
+  async listDevices(): Promise<{ devices: HubGinitDeviceEntry[] }> {
+    const hub = loadPersistedConfig(this.options.paseoHome).daemon?.hub;
+    if (!hub?.enabled || !hub.ginitBaseUrl || !hub.ginitToken || !hub.deviceId) {
+      throw new Error(
+        "Ginit hub device list needs a re-login (no cached account token); run Login with Feishu again",
+      );
+    }
+    const normalized = hub.ginitBaseUrl.replace(/\/+$/, "");
+    const res = await this.fetchImpl(`${normalized}/api/paseo/devices`, {
+      headers: { authorization: `Bearer ${hub.ginitToken}` },
+    });
+    if (!res.ok) {
+      throw new Error(`Ginit device list failed (${res.status} ${res.statusText})`);
+    }
+    const data = DeviceListResultSchema.parse(await res.json());
+    return {
+      devices: data.items.map((item) => ({
+        deviceId: item.device_id,
+        daemonId: item.daemon_id,
+        name: item.name,
+        status: item.status,
+        lastSeenAt: item.last_seen_at ?? null,
+        isSelf: item.device_id === hub.deviceId,
+      })),
+    };
   }
 }

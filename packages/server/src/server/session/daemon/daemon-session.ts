@@ -278,6 +278,37 @@ export class DaemonSession {
     }
   }
 
+  async handleHubListDevices(
+    msg: Extract<SessionInboundMessage, { type: "hub.list_devices.request" }>,
+  ): Promise<void> {
+    try {
+      if (!this.hubGinitEnroller) {
+        throw new Error("Ginit Hub enrollment is unavailable");
+      }
+      const result = await this.hubGinitEnroller.listDevices();
+      this.host.emit({
+        type: "hub.list_devices.response",
+        payload: {
+          requestId: msg.requestId,
+          success: true,
+          devices: result.devices,
+          error: null,
+        },
+      });
+    } catch (error) {
+      this.logger.error({ err: error }, "Failed to list Ginit Hub devices");
+      this.host.emit({
+        type: "hub.list_devices.response",
+        payload: {
+          requestId: msg.requestId,
+          success: false,
+          devices: [],
+          error: error instanceof Error ? error.message : String(error),
+        },
+      });
+    }
+  }
+
   async handleGetStatusRequest(
     msg: Extract<SessionInboundMessage, { type: "daemon.get_status.request" }>,
   ): Promise<void> {

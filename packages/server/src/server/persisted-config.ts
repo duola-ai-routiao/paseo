@@ -286,6 +286,10 @@ export const PersistedConfigSchema = z
             url: z.string().optional(),
             deviceId: z.string().optional(),
             token: z.string().optional(),
+            // ginit REST base URL + cached user token, captured at enrollment so
+            // daemon-side account APIs (device list) can be proxied for clients.
+            ginitBaseUrl: z.string().optional(),
+            ginitToken: z.string().optional(),
           })
           .strict()
           .optional(),
