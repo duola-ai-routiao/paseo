@@ -50,3 +50,13 @@
 
 **最终内容总结**:
 ✅ 已完成 8234 端口对外部署。原有部署在 `/home/alan/paseo-deploy`（docker compose，容器名 paseo，ghcr 镜像映射 6767:6767），改端口时触发容器 crash-loop：持久化 config.json 含 `daemon.hub`（feat_ginit_connect 分支新功能）而 GHCR latest 镜像不认识该 key。解决方案：从当前分支源码本地构建镜像 `paseo:local-ginit`（需用去掉 `--platform=$BUILDPLATFORM` 的 Dockerfile 副本绕过本机无 buildx 的限制），compose 改用本地镜像 + `8234:6767` 端口映射，`docker compose up -d` 重建后：① ss 确认 0.0.0.0:8234 与 [::]:8234 均 LISTEN；② curl 127.0.0.1:8234 和局域网 192.168.3.2:8234 均返回 HTTP 200；③ Playwright 打开 Web UI 正常渲染 Welcome 页（v0.2.0-beta.4）；④ 容器日志确认 ginit hub 链路恢复（hub.hello → welcome → workspace.snapshot）。局域网访问地址：`http://192.168.3.2:8234`，密码沿用 PASEO_PASSWORD。遗留：官方发布含 hub 的版本后可将 image 换回 ghcr latest。
+
+## 2026-07-26 配置 ginit ccd 自动同步到 paseo hub(远程可用)
+
+**用户需求 query**:帮我修改系统配置,下次 ginit ccd 会自动同步到 paseo hub,可以在远程的 paseo 上登录使用
+
+**最终内容总结**:
+✅ 已完成。链路:ginit ccd 会话结束 → 全局 Stop hook(~/.claude/settings.json 新增 hook,脚本在 ~/.local/share/paseo-hooks/)→ 自动 import 到 8234 容器(默认 host 127.0.0.1:8234,脚本内置 PASEO_PASSWORD)→ hub-connector 自动推送 workspace snapshot 到 ginit hub → 远程可见。
+改动:① paseo-deploy 容器 config 增加 agents.providers.claude 指向挂载的 ginit claude 运行时;② docker-compose 新增挂载 /opt/ginit-runtime(claude 二进制)、/home/alan(任意目录会话可导入)、/home/alan/.claude→/home/paseo/.claude(transcript 可见);③ 全局注册 Stop hook。
+端到端验证通过:在 ~/ccd-e2e-test 跑 ginit ccd,会话自动出现在 8234 的 agent 列表(source=ginit-auto),容器日志确认 hub.workspace.snapshot 从 2 增至 3 并完成推送。
+远程登录方式:局域网直接开 http://192.168.3.2:8234(密码同 PASEO_PASSWORD);公网通过 relay(app.paseo.sh 添加 serverId srv_nvcX2Px9Rmfh + 密码),relay 连接已验证正常。

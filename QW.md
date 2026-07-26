@@ -185,3 +185,40 @@ npm run cli -- ls -a -g --host localhost:6769
 5. **遗留**：① 局域网内其他机器用 `http://192.168.3.2:8234` 访问即可（密码与之前相同，PASEO_PASSWORD 未变）；② 后续官方发布含 hub 功能的版本后，可以把 image 换回 `ghcr.io/getpaseo/paseo:latest` 并删掉本地构建镜像；③ 注意 dev daemon 与生产容器现在分别占 6768/8234，6767 已空出。
 
 **结论**：paseo 已按 8234 端口对外部署完成，hub 配置兼容问题解决，Web UI 与 hub 链路均验证正常。
+
+---
+
+## 2026-07-26 - 配置 ginit ccd 会话自动同步到 paseo hub（远程可用）
+
+**Q（问题）**：用户要求修改系统配置，让 `ginit ccd` 启动的 Claude 会话下次自动同步到 paseo hub，并能在远程 paseo 上登录使用。
+
+**W（解决方法）**：
+
+### 目标链路
+
+`ginit ccd` 会话结束 → 全局 Stop hook → `paseo agent import` 到 8234 容器 → agentManager 事件 → hub-connector 推送 `hub.workspace.snapshot` 到 ginit hub → 远程可见。
+
+### 配置改动（3 处）
+
+1. **8234 容器支持导入 claude 会话**（`/home/alan/paseo-deploy/`）：
+   - `paseo-home/.paseo/config.json` 增加 `agents.providers.claude.command = ["/opt/ginit-runtime/bin/claude"]`（注意是 `agents.providers`，顶层 `providers` 是语音服务用的）。
+   - `docker-compose.yml` 增加 3 个挂载：
+     - `/home/alan/.ginit/device-runtime/runtime:/opt/ginit-runtime:ro`（claude 二进制）
+     - `/home/alan:/home/alan`（任意目录下的 ccd 会话 cwd 在容器内可访问）
+     - `/home/alan/.claude:/home/paseo/.claude`（claude transcript 在真实用户 home 下，容器内 daemon 以 paseo 用户运行，必须映射到它的 home）
+2. **全局 Stop hook**：hook 脚本固化到 `/home/alan/.local/share/paseo-hooks/paseo-auto-import.sh`，默认 host 改为 `127.0.0.1:8234`，脚本内默认导出 `PASEO_PASSWORD`（8234 需要密码，WS 子协议格式是 `paseo.bearer.<password>`）。注册到 `~/.claude/settings.json` 的 `hooks.Stop`（matcher 为空的新 group，与已有 ginit hook 并存，全局生效，任何目录的 ccd 会话都会触发）。
+3. **远程入口**（之前已就绪，本次复验）：
+   - 局域网：`http://192.168.3.2:8234`（绑 0.0.0.0，HTTP 200）
+   - 公网：relay 已启用且 `relay_control_connected`（app.paseo.sh 添加 serverId `srv_nvcX2Px9Rmfh` + 密码即可连）
+
+### 端到端验证
+
+- 在 `/home/alan/ccd-e2e-test` 跑 `ginit ccd -p "请只回复两个字:同步"`，Stop hook 自动导入成功（marker `~/.cache/ginit-paseo-imported/<session-id>` 幂等防重）。
+- `paseo ls --host 127.0.0.1:8234` 显示新 agent（provider=claude/claude-opus-4-8，labels 含 source=ginit-auto）。
+- 容器日志确认 snapshot 递增推送：`hub.workspace.snapshot workspaceCount 2 → 3`，hub 连接有 1006 断线但自动重连（Hub welcome received）。
+
+### 坑
+
+1. **容器内 cwd 必须存在**：import 校验 cwd，宿主路径 `/tmp/...` 在容器里不存在会报 `Working directory does not exist`；挂载 `/home/alan` 后真实路径即可直接通过，workspace 软链接方式（指到 /tmp）在容器内 dangling 不可用。
+2. **旧 marker 会跳过导入**：换目标 daemon 后要清 `~/.cache/ginit-paseo-imported/` 里对应的 marker 或换新会话测试。
+3. **hub 偶发 1006 断线属正常**：connector 有指数退避自动重连，不需要处理。
