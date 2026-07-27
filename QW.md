@@ -1,5 +1,15 @@
 # QW.md — Bug 修复记录
 
+## Q: 用户 A 的 Paseo daemon 是否会向 `150.5.173.43:8234` 发送注册信息和飞书账号信息?
+
+**W(解决方法/结论):** 不会。2026-07-27 实测排查:
+
+1. **`150.5.173.43:8234` 上跑的是 Paseo daemon,不是 Hub。** Paseo daemon 没有任何"接收其他 daemon 注册"的接口;注册/设备归属功能只存在于 ginit-server(`/api/paseo/enrollments*`、`/api/paseo/devices`、`/ws/v1/paseo`,见 `ginit-server/ginit/paseo_hub_gateway.py`、`server.py`)。
+2. **A 端注册目标是 `daemon.hub.url` 配置项,与 8234 无关。** 本机 A 端(docker 容器 `paseo`,`~/paseo-deploy`)的 `~/.paseo/config.json` 里 hub 指向 `wss://ginit.opensii.ai/ws/v1/paseo`,daemon 日志显示 `hub.hello` → `hub.welcome; device online`,即注册和心跳实际发往 ginit.opensii.ai。
+3. **飞书账号关联发生在 enrollment 时**:daemon 用飞书授权换来的 `ginit_` user token 调 `POST /api/paseo/enrollments`,服务端按 token 识别飞书用户(union_id)并绑定 device;daemon 本地只缓存 token,不发送飞书账号明文。
+4. **8234 只是本机 daemon 的 Web UI/RPC 端口**(docker 8234→6767),它出站连 Hub/relay,不接受"被注册"。
+5. 若要把 B(150.5.173.43)变成 Hub:在该机部署 ginit-server(`GINIT_PORT=8090` + `GINIT_WS_PORT=8091`,WS 网关含 `/ws/v1/paseo`;裸 IP 无 TLS 时 A 端配 `ginitBaseUrl=http://150.5.173.43:8090`,hub url 自动推导为 `ws://150.5.173.43:8090/ws/v1/paseo`——注意 wsgateway 需与 HTTP 同端口或反代路由),再把 A 端 `daemon.hub` 的 `url/ginitBaseUrl` 指过去并重新 enrollment。
+
 ## Q: git push 报 403「Permission to getpaseo/paseo.git denied to duola-ai-routiao」，用 GitHub 用户名+密码也登录不了
 
 **W（解决方法）：**
@@ -244,5 +254,6 @@ W: 这是真实的幂等性缺陷，不是测试造出来的问题。第一次 e
 
 **结论**：浏览器端永远不要直连 ginit API，一律走本地 daemon 的 hub RPC 代理；改了 web UI 代码要记得重建 docker 镜像才能生效。
 
-## Q: testbed(150.5.173.43) 部署 ginit staging 后 /api/paseo/* 与 /ws/v1/paseo 返回 404
+## Q: testbed(150.5.173.43) 部署 ginit staging 后 /api/paseo/\* 与 /ws/v1/paseo 返回 404
+
 W: testbed 的 /opt/ginit/ginit 是旧版（无 paseo_hub.py/paseo_hub_gateway.py，migrations 只到 0017）。修复：① 从本地 ginit-server rsync `ginit/`（--delete）+ `migrations/` 到 /opt/ginit 对应目录；② systemctl restart ginit 拉起 8090/8091；③ paseo 表未建——schema_version 里 16-24 被 tag 系列占用，与本地 0019/0020 版本号碰撞导致框架跳过；用 python 手动 executescript 0019_paseo_hub.sql + 0020_paseo_relay_metadata.sql，并以 100/101 登记 schema_version 避开 tag 冲突。验证：/api/paseo/devices 无 token 返回 401（路由已注册）、/ws/v1/paseo 返回 426（WS endpoint 存活）、/auth/device/start 返回 device_code。教训：ginit 版本号全局碰撞时，paseo 迁移需用独立高位段（100+）登记。
