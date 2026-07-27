@@ -14,7 +14,31 @@ import type { HostMutations } from "@/runtime/host-runtime";
 import { openExternalUrl } from "@/utils/open-external-url";
 import { StyleSheet } from "react-native-unistyles";
 
-const GINIT_BASE_URL = "https://ginit.opensii.ai";
+const GINIT_BASE_URL = resolveGinitBaseUrl();
+
+function resolveGinitBaseUrl(): string {
+  // Local/self-hosted deployments can point the Web UI at a co-located ginit
+  // server by setting window.__PASEO_GINIT_BASE_URL__ or serving the UI from
+  // the LAN. Production (app.paseo.sh) always uses the canonical hub.
+  if (typeof window !== "undefined") {
+    const injected = (window as { __PASEO_GINIT_BASE_URL__?: string }).__PASEO_GINIT_BASE_URL__;
+    if (typeof injected === "string" && injected.trim()) {
+      return injected.trim().replace(/\/+$/, "");
+    }
+    const origin = window.location?.origin ?? "";
+    if (origin.startsWith("http://127.0.0.1:") || origin.startsWith("http://localhost:")) {
+      return `${window.location.protocol}//${window.location.hostname}:18080`;
+    }
+    if (
+      /^https?:\/\/(10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+|192\.168\.\d+\.\d+)(:\d+)?$/.test(
+        origin,
+      )
+    ) {
+      return `${window.location.protocol}//${window.location.hostname}:18080`;
+    }
+  }
+  return "https://ginit.opensii.ai";
+}
 const HOST_PASSWORD_STORAGE_KEY = "@paseo:host-password-v1";
 
 function findConnectedClient(): DaemonClient | null {
