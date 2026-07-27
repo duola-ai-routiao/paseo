@@ -257,3 +257,31 @@ W: 这是真实的幂等性缺陷，不是测试造出来的问题。第一次 e
 ## Q: testbed(150.5.173.43) 部署 ginit staging 后 /api/paseo/\* 与 /ws/v1/paseo 返回 404
 
 W: testbed 的 /opt/ginit/ginit 是旧版（无 paseo_hub.py/paseo_hub_gateway.py，migrations 只到 0017）。修复：① 从本地 ginit-server rsync `ginit/`（--delete）+ `migrations/` 到 /opt/ginit 对应目录；② systemctl restart ginit 拉起 8090/8091；③ paseo 表未建——schema_version 里 16-24 被 tag 系列占用，与本地 0019/0020 版本号碰撞导致框架跳过；用 python 手动 executescript 0019_paseo_hub.sql + 0020_paseo_relay_metadata.sql，并以 100/101 登记 schema_version 避开 tag 冲突。验证：/api/paseo/devices 无 token 返回 401（路由已注册）、/ws/v1/paseo 返回 426（WS endpoint 存活）、/auth/device/start 返回 device_code。教训：ginit 版本号全局碰撞时，paseo 迁移需用独立高位段（100+）登记。
+
+---
+
+## 2026-07-28 - testbed(150.5.173.43) 部署 Paseo relay（8234）+ daemon 切 staging hub
+
+**Q（问题）**：A 端（本机 8234 paseo daemon）是否会向 `150.5.173.43:8234` 发送 daemon 注册和飞书账号信息？要求把 B 端（testbed）配成完整中继并让 A 端注册过去。
+
+**W（解决方法）**：
+
+1. **先厘清概念**：`150.5.173.43:8234` 上跑的既不是 ginit hub 也不是 paseo relay——注册（enrollment）只发生在 ginit-server（`/api/paseo/enrollments*`）且 daemon 只会把注册发到 `daemon.hub.url` 指向的 ginit 服务。要让 A 端「注册到 testbed」，需要两件独立的东西：① staging ginit hub（`wss://staging.ginit.opensii.ai/ws/v1/paseo`，Caddy→8090/8091，已就绪）② 数据面 relay（之前不存在）。
+
+2. **在 testbed 部署自托管 paseo relay（监听 0.0.0.0:8234）**：官方 relay 只有 Cloudflare Durable Objects 实现（`packages/relay/src/cloudflare-adapter.ts`），仓库里没有 Node 版 server。新写 `/opt/paseo-relay/relay-server.mjs`（单文件、依赖只有 `ws`），完整复刻 DO 的 v1/v2 线协议：`/ws?serverId&role&v=2`、control/data/client 三种 socket、sync/connected/disconnected 控制帧、client 帧缓冲到 daemon data socket 上线再 flush。systemd 单元 `paseo-relay.service` 常驻。验证：`curl http://150.5.173.43:8234/health` → `{"status":"ok","sessions":N}`。
+
+3. **修复 relay 每 ~20s 掉线重连（1006 churn）**：daemon 日志 `relay_control_disconnected(1006)` 每 20s 一次。定位过程：给 relay 加 close/error 日志后发现是 relay 自己的 heartbeat 在 terminate。**根因：`new WebSocketServer({ noServer: true })` 模式下 `wss.on("connection")` 不会触发**（`wss.handleUpgrade` 绕过发射），导致 `isAlive=true`/pong 监听从未挂上，heartbeat 第二轮就把所有 socket 判死。修复：把 `isAlive=true` + pong 监听移进 `handleUpgrade` 回调。教训：noServer 模式的心跳簿记必须放在 handleUpgrade 回调里。
+
+4. **A 端 daemon 配置切换**（`/home/alan/paseo-deploy/paseo-home/.paseo/config.json`）：`daemon.relay` = `{endpoint/publicEndpoint: "150.5.173.43:8234", useTls: false}`；`daemon.hub` 指向 staging（`wss://staging.ginit.opensii.ai/ws/v1/paseo` + `ginitBaseUrl: https://staging.ginit.opensii.ai`），删掉 prod 的 `token`/`ginitToken`（staging 是另一个数据库，prod 的 pht\_ token 在那里无效，必须重新 enroll）。`docker compose restart paseo` 后 `relay_control_connected` 稳定在线。
+
+5. **ginit-server 新增 PATCH `/api/paseo/devices/{id}`**（`paseo_hub.update_device_relay`）：enroll 只在 redeem 时写 relay metadata，重复登录又走「device_id already enrolled 保留凭证」分支，老设备永远 `connection_ready=false`。PATCH 端点让已注册设备可以补/改 `relay_endpoint`/`relay_use_tls`（带用户隔离和 400 校验）。已加单测（3 tests OK）、提交推送到 ginit `feat-paseo` 分支并部署到 testbed。
+
+6. **App 默认 ginit base URL 切 staging**：`ginit-feishu-welcome.tsx` 和 `host-page.tsx` 的 `GINIT_BASE_URL` 从 prod 改为 `https://staging.ginit.opensii.ai`（typecheck/lint/format 全绿，已推送 `cd6b5fd2a`）。注意：8234 容器里的 web UI bundle 是构建镜像时打包的，此改动要 `npm run build:daemon-web-ui` + 重建 `paseo:local-ginit` 镜像才对容器生效（本次未重建，因为 enroll 走的是 CLI RPC 通道）。
+
+7. **端到端验证结果**：
+   - relay E2E：用仓库的 `DaemonClient`（dist 构建产物）+ `buildRelayWebSocketUrl(role:"client")` 直连 `ws://150.5.173.43:8234`，E2EE 握手成功、RPC（hub.enroll_status）经 relay 打通 ✅
+   - daemon→relay control 长连接 90s+ 无掉线 ✅
+   - staging 端点：`/api/paseo/devices` 401（路由活）、`/ws/v1/paseo` 426（WS 活）、`/auth/device/start` 正常签发 ✅
+   - **飞书授权未完成**：device flow 已发起（verification_uri 有效 15 分钟），用户选择暂不授权，故 daemon 在 staging 的最终 enroll + 设备列表 online/connection_ready 留待授权后自动完成（后台轮询脚本 `/tmp/paseo-relay/poll-and-enroll.mjs` 授权即自动 enroll + PATCH relay metadata）。
+
+**结论**：B 端中继两件套（staging hub + 自托管 relay:8234）已就绪；A 端 daemon 的 relay 数据面已切到 `150.5.173.43:8234` 且验证可连；A 端注册（enroll）目标已切到 staging，差最后一步飞书授权。授权后完整链路 = A 端 enroll 到 staging hub（绑定飞书账号）→ C 端同账号登录 staging 看到设备 → 经 `150.5.173.43:8234` relay 连到 A 端 daemon。

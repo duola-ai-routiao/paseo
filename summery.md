@@ -159,3 +159,23 @@
 ✅ 架构对应用户需求：A 端 Paseo daemon 用飞书 device flow enroll 到 `wss://staging.ginit.opensii.ai/ws/v1/paseo` 并上报 workspace snapshot；B 中继侧 paseo_devices 表存 daemon 信息+飞书 union_id 归属；C 端 App/网页飞书登录后调 /api/paseo/devices 列出同账号远程主机并经 relay 连接。
 ⏳ 关于「8234 端口」：8234 已被占用为本机 Paseo daemon/Web UI 的对外映射端口（docker 8234→6767），并非中继端口；中继控制面走 staging 443（Caddy→8090/8091）。若需中继数据面（relay）独立监听 8234 或对外端口映射，需另行说明后配置。
 遗留：真实跨端飞书授权 + relay E2E 尚未跑通；Paseo daemon 的 ginit baseUrl 需切到 staging（当前默认 prod ginit.opensii.ai）做联调。
+
+---
+
+## 2026-07-28 A 端是否会向 150.5.173.43:8234 注册?
+
+**用户需求 query:** A 端 ginit cli 启动 daemon 时会向中继服务器注册 daemon 信息和飞书账号;B(150.5.173.43:8234)正在部署为中继/paseo hub。问 A 端当前是否会向 150.5.173.43:8234 发送注册和飞书账号信息,并要求配置。
+
+**内容总结:** 不会。排查确认 150.5.173.43:8234 上跑的是 Paseo daemon 而非 Hub——Paseo daemon 没有接收注册的接口,注册/飞书绑定只存在于 ginit-server(/api/paseo/enrollments、/ws/v1/paseo)。本机 A 端(~/paseo-deploy docker 容器 paseo)的 ~/.paseo/config.json 中 daemon.hub 已指向 wss://ginit.opensii.ai/ws/v1/paseo,daemon 日志显示 hub.hello→hub.welcome(deviceId eab4adff,serverId srv*nvcX2Px9Rmfh)在线,即注册实际发往 ginit.opensii.ai。飞书账号关联发生在 enrollment:daemon 用飞书授权换来的 ginit* token 调 enrollments,服务端按 token 识别 union_id 绑定 device,daemon 本地只缓存 token。8234 只是本机 daemon 的 Web UI 端口。结论和 B 端改造方案(部署 ginit-server GINIT_PORT=8090+GINIT_WS_PORT=8091 后 A 端重指 daemon.hub)已记录到 QW.md 并 git push。
+
+---
+
+## 2026-07-28 部署 testbed relay(8234) + A 端 daemon 切 staging 注册
+
+**用户需求 query**: A 端 ginit cli 启动 daemon 时自动把相同飞书账户的 daemon 注册到中继;B 中继(150.5.173.43:8234)存储远程 daemon 信息+飞书账号;C 手机/网页飞书登录后看到远程服务。B 正在部署——A 端是否会向 150.5.173.43:8234 发注册和飞书账号信息?帮我配置。
+
+**最终内容总结**:
+✅ 回答:A 端不会直接向 150.5.173.43:8234「注册」——注册(飞书绑定)只走 ginit hub(staging `wss://staging.ginit.opensii.ai/ws/v1/paseo`);8234 部署的是数据面 relay,负责 enroll 之后的加密数据转发。两者都已在 testbed 就绪:staging ginit(8090/8091,Caddy 443) + 新写的自托管 paseo relay(`/opt/paseo-relay/relay-server.mjs`,systemd 常驻,0.0.0.0:8234,复刻 Cloudflare DO 的 v1/v2 线协议)。
+✅ A 端(本机 docker paseo 8234)已配置:`daemon.relay` 指向 `150.5.173.43:8234`(无 TLS),`daemon.hub` 切到 staging 并清掉 prod token(需重新 enroll)。验证:relay control 长连接稳定、用仓库 DaemonClient 经 relay E2EE 连接 RPC 成功、staging 端点 401/426/device_start 全活。
+✅ 过程中修了两个真实 bug:① relay 每 20s 掉线——`WebSocketServer({noServer:true})` 不触发 `connection` 事件,heartbeat 的 isAlive/pong 簿记必须放 `handleUpgrade` 回调;② ginit 老设备永远 `connection_ready=false`——新增 PATCH `/api/paseo/devices/{id}` 补 relay metadata(ginit `feat-paseo` 已推送,含单测)。paseo 侧 App 默认 ginit URL 切 staging(已推送 `cd6b5fd2a`)。
+⏳ 遗留:飞书授权(device flow 已发起,后台轮询脚本待授权后自动 enroll+PATCH);授权后 staging 设备列表应显示 A 端 online + connection_ready;App URL 改动需重建 `paseo:local-ginit` 镜像才对 8234 web UI 生效。
