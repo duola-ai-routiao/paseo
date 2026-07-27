@@ -179,3 +179,16 @@
 ✅ A 端(本机 docker paseo 8234)已配置:`daemon.relay` 指向 `150.5.173.43:8234`(无 TLS),`daemon.hub` 切到 staging 并清掉 prod token(需重新 enroll)。验证:relay control 长连接稳定、用仓库 DaemonClient 经 relay E2EE 连接 RPC 成功、staging 端点 401/426/device_start 全活。
 ✅ 过程中修了两个真实 bug:① relay 每 20s 掉线——`WebSocketServer({noServer:true})` 不触发 `connection` 事件,heartbeat 的 isAlive/pong 簿记必须放 `handleUpgrade` 回调;② ginit 老设备永远 `connection_ready=false`——新增 PATCH `/api/paseo/devices/{id}` 补 relay metadata(ginit `feat-paseo` 已推送,含单测)。paseo 侧 App 默认 ginit URL 切 staging(已推送 `cd6b5fd2a`)。
 ⏳ 遗留:飞书授权(device flow 已发起,后台轮询脚本待授权后自动 enroll+PATCH);授权后 staging 设备列表应显示 A 端 online + connection_ready;App URL 改动需重建 `paseo:local-ginit` 镜像才对 8234 web UI 生效。
+
+---
+
+## 2026-07-28 08:30 - testbed 部署 ginit-server 版本核查与现状复盘
+
+**用户需求 query**: 帮我在 150.5.173.43 部署 ginit-server。先查看本地 QW.md 文档，部署什么版本的。需要：GINIT_PORT=8090(HTTP API) + GINIT_WS_PORT=8091(WS 网关，/ws/v1/paseo)、配好飞书 app 凭据、把 A 端 daemon.hub 指到 ginitBaseUrl=http://150.5.173.43:8090 + ws://150.5.173.43:8091/ws/v1/paseo（裸 IP 无 TLS 用 ws://），数据面 relay 另算。
+
+**最终内容总结**:
+✅ **QW.md 记录的版本 = feat-paseo HEAD `c2fe5fa`**(`feat(paseo): add PATCH device relay-metadata endpoint`，2026-07-28 凌晨推送)。该 commit 是为支持「老设备补 relay metadata 不重 enroll」专门加的，也是 staging 部署记录使用的代码。
+✅ **testbed 现状核查（已部署，无需重做）**: ① `/opt/ginit/ginit/{server,paseo_hub,paseo_hub_gateway}.py` md5 与 feat-paseo HEAD 完全一致；② `migrations/` 含 0019+0020 paseo 迁移；③ DB schema_version 已登记 100/101（避开 tag 冲突）; ④ `paseo_devices` 表含 `relay_endpoint`/`relay_use_tls` 列；⑤ systemd ginit active 6h+；⑥ 监听 `127.0.0.1:8090`(HTTP)+`127.0.0.1:8091`(WS);⑦ `/etc/ginit.env` 含完整飞书凭据（FEISHU_APP_ID/SECRET/REDIRECT_URI/OAUTH_SCOPES);⑧ Caddy `staging.ginit.opensii.ai` 已反代 `/ws/v1/* → 8091`、其余 `→ 8090`。
+✅ **探测结果**: `https://staging.ginit.opensii.ai/health` → `200 OK`（经 Caddy→8090);`https://staging.../ws/v1/paseo` → `426 Upgrade Required`（经 Caddy→8091,WS 端点活）。A 端 daemon.hub 当前已指向 `https://staging.ginit.opensii.ai` + `wss://staging.ginit.opensii.ai/ws/v1/paseo`（即 testbed 经 staging 域名的入口）。
+⚠️ **用户需求的『裸 IP http://150.5.173.43:8090 + ws://150.5.173.43:8091』当前不可达** — ginit 绑 `127.0.0.1`(`GINIT_HOST=127.0.0.1` 在 `/etc/ginit.env`)，公网/裸 IP 直连超时；仅 staging 域名经 Caddy(443,TLS）可访问。要让 `http://150.5.173.43:8090` 直连，需把 `GINIT_HOST=0.0.0.0` 并 systemctl restart ginit；但 8090 裸 IP 公网暴露 + 无 TLS + 飞书 OAuth redirect URI 配置在 staging 域名，安全/凭据权衡需用户确认后再操作。
+⏳ **遗留**: 等用户确认是否切 GINIT_HOST=0.0.0.0（裸 IP 直连）还是维持现状（staging 域名经 Caddy，推荐）。

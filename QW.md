@@ -1,5 +1,24 @@
 # QW.md — Bug 修复记录
 
+## 2026-07-28 - testbed(150.5.173.43) 部署 ginit-server 复盘与验证
+
+**Q（问题）**：用户要求在 `150.5.173.43` 部署 ginit-server（控制面：飞书 OAuth + Hub WS 网关），端口 `GINIT_PORT=8090` + `GINIT_WS_PORT=8091`（`/ws/v1/paseo` 在 WS 网关上）。先查 QW.md 确定版本。
+
+**W（解决方法）**：
+
+1. **QW.md 记录的版本就是 feat-paseo HEAD**。本地 ginit-server checkout `/home/alan/ginit/ginit/ginit-server` 分支 `feat-paseo` 与 `origin/feat-paseo` 同步，HEAD `c2fe5fa feat(paseo): add PATCH device relay-metadata endpoint`。该 commit 是 2026-07-28 凌晨为支持「老设备补 relay metadata 不重 enroll」专门加的，也是 QW.md 上一篇 staging 部署记录使用的代码。
+2. **核对 testbed 与本地代码一致性**：`/opt/ginit/ginit/{server.py,paseo_hub.py,paseo_hub_gateway.py}` md5 与本地 `feat-paseo` HEAD 完全一致；`migrations/` 含 `0019_paseo_hub.sql` + `0020_paseo_relay_metadata.sql`，mtime `2026-07-27 23:37-46`，与 feat-paseo HEAD 同步时间吻合。**testbed 已经在跑 feat-paseo HEAD**。
+3. **核对 DB schema**：`/var/lib/ginit/ginit.db` 的 `schema_version` 含 `(100, 2026-07-27T15:19:47Z)` + `(101, 2026-07-27T15:19:47Z)`，正是 QW.md 提到的「paseo 迁移用 100+ 避开 tag 系列冲突」的登记；`paseo_devices` 表已含 `relay_endpoint`/`relay_use_tls` 列。
+4. **核对运行状态**：`systemctl status ginit` active（PID 24548，运行 6h+）；`ss -tlnp` 确认 `127.0.0.1:8090`（HTTP）+ `127.0.0.1:8091`（WS gateway）双端口监听；`/etc/ginit.env` 含 `GINIT_PORT=8090`/`GINIT_WS_PORT=8091`/`FEISHU_APP_ID=...389cd2`/`FEISHU_REDIRECT_URI=...callback` 等完整飞书凭据；Caddyfile `staging.ginit.opensii.ai` 已反代 `/ws/v1/* → 8091`、其余 `→ 8090`。
+5. **探测结果**：
+   - `https://staging.ginit.opensii.ai/health` → `200 OK`（经 Caddy → 8090）✅
+   - `https://staging.ginit.opensii.ai/ws/v1/paseo` → `426 Upgrade Required`（经 Caddy → 8091，WS 端点存活）✅
+   - `http://150.5.173.43:8090/health` → 超时（`GINIT_HOST=127.0.0.1`，**裸 IP 直连不可达**，仅 staging 域名经 Caddy 可访问）⚠️
+   - `http://150.5.173.43:8091` → 超时（同上）⚠️
+6. **A 端 daemon 当前配置**（`/home/alan/paseo-deploy/paseo-home/.paseo/config.json`）：`daemon.hub.url=wss://staging.ginit.opensii.ai/ws/v1/paseo` + `daemon.hub.ginitBaseUrl=https://staging.ginit.opensii.ai` + `daemon.relay.endpoint=150.5.173.43:8234`（自托管 relay），已是指向 testbed 的状态。
+
+**结论**：B 端（testbed）ginit-server **已在跑 feat-paseo HEAD（c2fe5fa）**，QW.md 描述的 8090/8091 + 飞书凭据 + Caddy 反代均已就绪；A 端 daemon 已指向 staging。**唯一与用户需求（`http://150.5.173.43:8090` + `ws://150.5.173.43:8091/ws/v1/paseo` 裸 IP）的差异：ginit 绑在 `127.0.0.1`，仅经 staging 域名可访问**。是否要改 `GINIT_HOST=0.0.0.0` 让裸 IP 直连，需用户确认（公网暴露 + 无 TLS，安全权衡）。
+
 ## Q: 用户 A 的 Paseo daemon 是否会向 `150.5.173.43:8234` 发送注册信息和飞书账号信息?
 
 **W(解决方法/结论):** 不会。2026-07-27 实测排查:
