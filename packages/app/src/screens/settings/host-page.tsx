@@ -519,7 +519,7 @@ function GinitHubSection({ serverId }: { serverId: string }) {
     setErrorMessage(null);
 
     try {
-      const GINIT_BASE_URL = "https://ginit.opensii.ai";
+      const GINIT_BASE_URL = "https://staging.ginit.opensii.ai";
       // Device flow runs through the daemon so the browser never fetches the
       // ginit server directly (the ginit server sends no CORS headers).
       const start = await daemonClient.hubDeviceStart(GINIT_BASE_URL);

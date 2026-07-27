@@ -37,7 +37,7 @@ function resolveGinitBaseUrl(): string {
       return `${window.location.protocol}//${window.location.hostname}:18080`;
     }
   }
-  return "https://ginit.opensii.ai";
+  return "https://staging.ginit.opensii.ai";
 }
 const HOST_PASSWORD_STORAGE_KEY = "@paseo:host-password-v1";
 
