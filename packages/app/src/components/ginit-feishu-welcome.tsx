@@ -1,6 +1,8 @@
 import { useCallback, useState } from "react";
 import { Text, View } from "react-native";
 import { LogIn } from "lucide-react-native";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import { Button } from "@/components/ui/button";
 import {
   getHostRuntimeStore,
@@ -8,10 +10,85 @@ import {
   useHostMutations,
   useHosts,
 } from "@/runtime/host-runtime";
+import type { HostMutations } from "@/runtime/host-runtime";
 import { openExternalUrl } from "@/utils/open-external-url";
 import { StyleSheet } from "react-native-unistyles";
 
 const GINIT_BASE_URL = "https://ginit.opensii.ai";
+const HOST_PASSWORD_STORAGE_KEY = "@paseo:host-password-v1";
+
+function findConnectedClient(): DaemonClient | null {
+  const store = getHostRuntimeStore();
+  for (const host of store.getHosts()) {
+    const snapshot = store.getSnapshot(host.serverId);
+    if (isHostRuntimeConnected(snapshot) && snapshot?.client) {
+      return snapshot.client;
+    }
+  }
+  return null;
+}
+
+/**
+ * Probes the daemon that served this page (window.location.host). The daemon
+ * may require a password; prompt once and cache it so the host registry entry
+ * keeps reconnecting on later visits.
+ */
+async function probePageDaemon(
+  probeAndUpsertDirectConnection: HostMutations["probeAndUpsertDirectConnection"],
+): Promise<DaemonClient> {
+  let password = await AsyncStorage.getItem(HOST_PASSWORD_STORAGE_KEY);
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const probed = await probeAndUpsertDirectConnection({
+        endpoint: window.location.host,
+        ...(password ? { password } : {}),
+      });
+      const client = getHostRuntimeStore().getSnapshot(probed.serverId)?.client;
+      if (client) return client;
+      throw new Error("Connected to the host but no runtime client is available.");
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      if (!/password/i.test(message)) throw cause;
+      const entered = window.prompt("Enter the Paseo host password:", "");
+      if (entered === null) {
+        throw new Error("Login cancelled — host password required.", { cause });
+      }
+      password = entered.trim();
+      await AsyncStorage.setItem(HOST_PASSWORD_STORAGE_KEY, password);
+    }
+  }
+  throw new Error("Unable to connect to the local Paseo host with the provided password.");
+}
+
+async function resolveDaemonClient(
+  probeAndUpsertDirectConnection: HostMutations["probeAndUpsertDirectConnection"],
+): Promise<DaemonClient> {
+  const connected = findConnectedClient();
+  if (connected) return connected;
+  // No host is connected yet (fresh browser profile hitting a deployed web
+  // UI). The welcome screen only makes sense when it can reach the daemon
+  // that served this page, so probe it directly.
+  if (typeof window === "undefined" || !window.location?.host) {
+    throw new Error("No local Paseo host is connected yet — start the daemon and retry.");
+  }
+  return probePageDaemon(probeAndUpsertDirectConnection);
+}
+
+async function pollForGinitToken(
+  client: DaemonClient,
+  deviceCode: string,
+  expiresIn: number,
+): Promise<string> {
+  const deadline = Date.now() + expiresIn * 1000;
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+    const poll = await client.hubDevicePoll(GINIT_BASE_URL, deviceCode);
+    if (poll.status === "completed" && poll.token) {
+      return poll.token;
+    }
+  }
+  throw new Error("Feishu login timed out");
+}
 
 /**
  * Feishu login on the welcome screen.
@@ -24,7 +101,7 @@ const GINIT_BASE_URL = "https://ginit.opensii.ai";
  * talk to ginit on our behalf.
  */
 export function GinitFeishuWelcome() {
-  const hosts = useHosts();
+  useHosts();
   const { probeAndUpsertDirectConnection } = useHostMutations();
   const [state, setState] = useState<"idle" | "loading" | "enrolled" | "error">("idle");
   const [error, setError] = useState<string | null>(null);
@@ -33,47 +110,24 @@ export function GinitFeishuWelcome() {
     setState("loading");
     setError(null);
     try {
-      const store = getHostRuntimeStore();
-      const onlineHost = hosts.find((host) =>
-        isHostRuntimeConnected(store.getSnapshot(host.serverId)),
-      );
-      const client = onlineHost ? store.getSnapshot(onlineHost.serverId)?.client : null;
-      if (!onlineHost || !client) {
-        throw new Error("No local Paseo host is connected yet — start the daemon and retry.");
-      }
+      const client = await resolveDaemonClient(probeAndUpsertDirectConnection);
 
       // Device flow runs through the daemon so the browser never fetches the
       // ginit server directly (the ginit server sends no CORS headers).
       const start = await client.hubDeviceStart(GINIT_BASE_URL);
       await openExternalUrl(start.verificationUri);
-
-      const deadline = Date.now() + start.expiresIn * 1000;
-      let token: string | null = null;
-      while (Date.now() < deadline) {
-        await new Promise((resolve) => setTimeout(resolve, 2000));
-        const poll = await client.hubDevicePoll(GINIT_BASE_URL, start.deviceCode);
-        if (poll.status === "completed") {
-          token = poll.token;
-          break;
-        }
-      }
-      if (!token) throw new Error("Feishu login timed out");
+      const token = await pollForGinitToken(client, start.deviceCode, start.expiresIn);
 
       const enrollRes = await client.hubLoginGinit(GINIT_BASE_URL, token);
       if (!enrollRes.success) {
         throw new Error(enrollRes.error || "Enrollment failed");
       }
-
-      // The enrolled daemon is now reachable through the hub/relay; make sure
-      // it stays in the host list even if the direct LAN connection drops.
-      const listen = new URL(enrollRes.hubUrl ?? GINIT_BASE_URL).host;
-      await probeAndUpsertDirectConnection({ endpoint: listen, label: onlineHost.label });
       setState("enrolled");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
       setState("error");
     }
-  }, [hosts, probeAndUpsertDirectConnection]);
+  }, [probeAndUpsertDirectConnection]);
 
   const handleLoginPress = useCallback(() => {
     void login();

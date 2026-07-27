@@ -138,3 +138,13 @@
 ✅ 根因：`packages/app/src/components/ginit-feishu-welcome.tsx` 直接 fetch ginit 服务器，而 ginit 不返回 CORS 头，浏览器跨域拦截响应。
 ✅ 修复：欢迎页登录流程改为复用 daemon 已有的 hub RPC 代理（`hubDeviceStart` → `hubDevicePoll` → `hubLoginGinit`），浏览器全程不直连 ginit；enroll 成功后由欢迎页原有 `useAnyHostOnline` 监听自动跳转工作区。typecheck/lint 全绿。
 ✅ 验证要点：8234 是 docker 容器（镜像 `paseo:local-ginit`）里的打包 bundle，改 app 代码必须 `npm run build:daemon-web-ui` + 重建镜像 + `docker compose up -d` 才生效；重建后 Playwright 点击登录，console 无任何 ginit 直连请求、无 CORS 错误，device flow 经 daemon 代理正常发起。
+
+## 2026-07-27 欢迎页登录兜底：无已连接 host 时自动探测+密码缓存（进展总结）
+
+**用户需求 query**: 帮我总结当前进展和结果（CORS 修复后续验证阶段）。
+
+**最终内容总结**:
+✅ 已完成：欢迎页 Feishu 登录改为走 daemon hub RPC 代理，CORS 错误彻底消除（第一版已提交推送）。
+✅ 验证中发现并修复第二个问题：干净浏览器无任何已连接 host 时登录按钮不可用——组件增加兜底逻辑，自动探测提供当前页面的 daemon（window.location.host），密码保护时 prompt 一次并缓存（`@paseo:host-password-v1`）。Playwright 实测密码输入后成功连接 daemon 并跳转 /open-project。
+✅ 过程中解决 docker 重建两个坑：容器内 npm ci 需走 registry.npmmirror.com；改 app 代码必须 build:daemon-web-ui + 重建镜像才生效。
+⏳ 遗留：第二版兜底改动尚未提交；完整飞书授权（人工在弹出的验证页确认）→ enroll 成功这一段未做端到端人工确认（需要真实飞书账号操作）。
