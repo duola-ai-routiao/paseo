@@ -226,3 +226,19 @@ npm run cli -- ls -a -g --host localhost:6769
 ## Q: 飞书重复登录出现 device_id already enrolled，是否测试问题？
 
 W: 这是真实的幂等性缺陷，不是测试造出来的问题。第一次 enrollment 会把当前 daemon 的 device*id 注册到 ginit hub；重复登录仍然使用相同 device_id redeem，hub 正确拒绝重复注册。修复是在 daemon enroll 中识别该明确的 400 错误，保留已有 pht* 设备凭证，仅刷新 ginitBaseUrl/ginitToken；同时 UI 提示旧设备需重新登录而不无限循环。测试覆盖首次 enrollment、重复 enrollment、设备列表 token 缺失和设备列表成功场景；Playwright 通过真实飞书授权验证了重复登录后的 token 持久化和设备列表加载。
+
+---
+
+## 2026-07-27 - 欢迎页 Feishu 登录被 CORS 拦截
+
+**Q（问题）**：浏览器打开 `http://192.168.3.2:8234/welcome`，点「Login with Feishu」后控制台报 `Access to fetch at 'https://ginit.opensii.ai/auth/device/start' from origin 'http://192.168.3.2:8234' has been blocked by CORS policy: No 'Access-Control-Allow-Origin' header`，登录完全走不通。
+
+**W（解决方法）**：
+
+1. **根因**：`packages/app/src/components/ginit-feishu-welcome.tsx` 里直接 `fetch("https://ginit.opensii.ai/auth/device/start")`。ginit 服务器不返回任何 CORS 头，跨域请求在浏览器侧被拦截（服务器其实收到了请求，但响应被浏览器丢弃）。同源策略只在浏览器生效，daemon（Node.js）直连没有这个问题。
+2. **修复思路**：daemon 本来就已经实现了完整的 ginit 设备流代理 RPC——`hub.device_start.request` / `hub.device_poll.request` / `hub.login_ginit.request`（server 端 `GinitHubEnroller.deviceStart/devicePoll/enroll`，设置页 `host-page.tsx` 的 GinitHubSection 已在用）。欢迎页组件改为复用这条链路：从 `useHosts()` 找当前已连接的本地 host 的 daemon client，走 WebSocket RPC 完成 device start → 打开 verification_uri → 轮询 poll → enroll，全程不直接访问 ginit 服务器。
+3. **顺手修正**：旧流程登录后展示的设备列表依赖 ginit `/api/paseo/devices` 返回的 `public_key`/`relay_endpoint` 字段（server 端 schema 里没有这些字段，永远连不上）；新流程 enroll 成功后 daemon 自己就连上 hub，欢迎页原有的 `useAnyHostOnline` 监听会自动跳转工作区，设备发现交给设置页。
+4. **验证时注意**：`http://192.168.3.2:8234` 是 docker 容器（镜像 `paseo:local-ginit`）提供的 web UI，bundle 是构建镜像时打包进去的。改了 app 代码必须重新 `npm run build:daemon-web-ui` + 重新 `docker build` + `docker compose up -d`，否则容器里还是旧 bundle，CORS 报错会复现（本次第一次验证就踩到这个）。
+5. **验证结果**：重建镜像后 Playwright 点击登录按钮，console 无任何指向 ginit.opensii.ai 的请求、无 CORS 错误；device flow 经 daemon 代理正常发起。
+
+**结论**：浏览器端永远不要直连 ginit API，一律走本地 daemon 的 hub RPC 代理；改了 web UI 代码要记得重建 docker 镜像才能生效。

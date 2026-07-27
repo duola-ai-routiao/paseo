@@ -129,3 +129,12 @@
 ✅ 新增完整文档 `docs/ginit-paseo-complete-architecture.md`，统一记录旧版扫码配对架构、新版 ginit CLI/Paseo daemon/ginit Hub/阿里云 relay/手机 Web 客户端架构、当前地址、Docker 端口映射、安装流程、飞书登录自动发现主机、跨服务器方案、无公网 IP/无 SSH 方案、安全边界、测试结果和遗留事项。
 ✅ 文档明确区分：`https://app.paseo.sh` 是远程 Web 客户端；本机 `http://127.0.0.1:8234`/局域网 `http://192.168.3.2:8234` 是 Paseo daemon/Web UI；`wss://ginit.opensii.ai/ws/v1/paseo` 是 ginit Hub；阿里云 Paseo relay 是独立的数据面中继，当前尚需正式部署公网 endpoint。
 ✅ 已运行文档格式化和 git diff 检查；文档保存了当前已完成能力和不能过度宣称的遗留项。
+
+## 2026-07-27 欢迎页 Feishu 登录 CORS 修复
+
+**用户需求 query**: 欢迎页点「Login with Feishu」报 CORS 错误（`Access to fetch at 'https://ginit.opensii.ai/auth/device/start' from origin 'http://192.168.3.2:8234' has been blocked by CORS policy`）；远程中继暂时也在本地部署，方便本地测试。
+
+**最终内容总结**:
+✅ 根因：`packages/app/src/components/ginit-feishu-welcome.tsx` 直接 fetch ginit 服务器，而 ginit 不返回 CORS 头，浏览器跨域拦截响应。
+✅ 修复：欢迎页登录流程改为复用 daemon 已有的 hub RPC 代理（`hubDeviceStart` → `hubDevicePoll` → `hubLoginGinit`），浏览器全程不直连 ginit；enroll 成功后由欢迎页原有 `useAnyHostOnline` 监听自动跳转工作区。typecheck/lint 全绿。
+✅ 验证要点：8234 是 docker 容器（镜像 `paseo:local-ginit`）里的打包 bundle，改 app 代码必须 `npm run build:daemon-web-ui` + 重建镜像 + `docker compose up -d` 才生效；重建后 Playwright 点击登录，console 无任何 ginit 直连请求、无 CORS 错误，device flow 经 daemon 代理正常发起。
