@@ -148,3 +148,14 @@
 ✅ 验证中发现并修复第二个问题：干净浏览器无任何已连接 host 时登录按钮不可用——组件增加兜底逻辑，自动探测提供当前页面的 daemon（window.location.host），密码保护时 prompt 一次并缓存（`@paseo:host-password-v1`）。Playwright 实测密码输入后成功连接 daemon 并跳转 /open-project。
 ✅ 过程中解决 docker 重建两个坑：容器内 npm ci 需走 registry.npmmirror.com；改 app 代码必须 build:daemon-web-ui + 重建镜像才生效。
 ⏳ 遗留：第二版兜底改动尚未提交；完整飞书授权（人工在弹出的验证页确认）→ enroll 成功这一段未做端到端人工确认（需要真实飞书账号操作）。
+
+## 2026-07-27 部署中继服务器（ginit staging @ testbed 150.5.173.43）
+
+**用户需求 query**: 帮我部署中继服务器，中继服务器需要使用飞书登录，远端通过飞书账户可以登录。A 用户端 ginit cli 自动将相同飞书账户的 daemon 注册到中继服务器；B 中继服务器存储大量远程 daemon 信息及对应飞书账号；C 手机端/网页端通过飞书账号登录后可看到远程 ginit cli 启动的服务。Host ginit-testbed 150.5.173.43 root。中继服务使用 8234 端口部署。
+
+**最终内容总结**:
+✅ 已把 Paseo 中继（ginit Hub）部署到 ginit-testbed(150.5.173.43)，即 staging 环境 `https://staging.ginit.opensii.ai`。核心是把本地 ginit `feat-paseo` 分支（含 paseo_hub.py / paseo_hub_gateway.py / 0019+0020 迁移 / 飞书 OAuth）同步到 testbed 并重启。
+✅ 三步落地：① rsync ginit 源码+migrations 到 /opt/ginit 并 systemctl restart ginit（8090 HTTP / 8091 WS-gateway 正常监听）；② 修复版本号碰撞——schema_version 16-24 被 tag 系列占用，手动应用 0019_paseo_hub + 0020_paseo_relay_metadata 并以 100/101 登记，paseo_devices/paseo_enrollments/paseo_hub_connections 三表及 relay_endpoint 列建成；③ 端到端验证：/api/paseo/devices 无 token 返 401（路由活）、/ws/v1/paseo 返 426（WS 端点活）、/auth/device/start 成功签发 device_code+verification_uri（飞书 device flow 可用）。
+✅ 架构对应用户需求：A 端 Paseo daemon 用飞书 device flow enroll 到 `wss://staging.ginit.opensii.ai/ws/v1/paseo` 并上报 workspace snapshot；B 中继侧 paseo_devices 表存 daemon 信息+飞书 union_id 归属；C 端 App/网页飞书登录后调 /api/paseo/devices 列出同账号远程主机并经 relay 连接。
+⏳ 关于「8234 端口」：8234 已被占用为本机 Paseo daemon/Web UI 的对外映射端口（docker 8234→6767），并非中继端口；中继控制面走 staging 443（Caddy→8090/8091）。若需中继数据面（relay）独立监听 8234 或对外端口映射，需另行说明后配置。
+遗留：真实跨端飞书授权 + relay E2E 尚未跑通；Paseo daemon 的 ginit baseUrl 需切到 staging（当前默认 prod ginit.opensii.ai）做联调。

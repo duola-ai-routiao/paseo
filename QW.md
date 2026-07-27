@@ -243,3 +243,6 @@ W: 这是真实的幂等性缺陷，不是测试造出来的问题。第一次 e
 6. **验证结果**：重建镜像后 Playwright 点击登录按钮，console 无任何指向 ginit.opensii.ai 的请求、无 CORS 错误；device flow 经 daemon 代理正常发起；密码缓存后 welcome 页因 host 在线自动跳转工作区（说明连接链路完整）。
 
 **结论**：浏览器端永远不要直连 ginit API，一律走本地 daemon 的 hub RPC 代理；改了 web UI 代码要记得重建 docker 镜像才能生效。
+
+## Q: testbed(150.5.173.43) 部署 ginit staging 后 /api/paseo/* 与 /ws/v1/paseo 返回 404
+W: testbed 的 /opt/ginit/ginit 是旧版（无 paseo_hub.py/paseo_hub_gateway.py，migrations 只到 0017）。修复：① 从本地 ginit-server rsync `ginit/`（--delete）+ `migrations/` 到 /opt/ginit 对应目录；② systemctl restart ginit 拉起 8090/8091；③ paseo 表未建——schema_version 里 16-24 被 tag 系列占用，与本地 0019/0020 版本号碰撞导致框架跳过；用 python 手动 executescript 0019_paseo_hub.sql + 0020_paseo_relay_metadata.sql，并以 100/101 登记 schema_version 避开 tag 冲突。验证：/api/paseo/devices 无 token 返回 401（路由已注册）、/ws/v1/paseo 返回 426（WS endpoint 存活）、/auth/device/start 返回 device_code。教训：ginit 版本号全局碰撞时，paseo 迁移需用独立高位段（100+）登记。
