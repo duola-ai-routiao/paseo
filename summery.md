@@ -112,3 +112,20 @@
 ✅ Paseo Welcome 页新增独立 Ginit Feishu 登录组件：device flow 完成飞书授权后请求 `/api/paseo/devices`，显示账号下设备，并对 connection-ready 在线设备自动使用 relay metadata 创建 HostProfile；原 direct/pairing 入口仍保留。
 ✅ ginit Hub 新增 0020 relay metadata migration，设备 enrollment 保存 relay endpoint/TLS，设备列表返回 public_key、relay metadata 和 connection_ready；ginit CLI Paseo attach 增加 relay metadata 上报和已存在设备的幂等检查。
 ✅ 测试通过：ginit Hub Python Paseo 测试 2/2、ginit CLI Go 测试通过、Paseo typecheck 通过、相关 app lint 通过、git diff --check 通过。真实跨端飞书授权/relay E2E 尚未运行；Web 直接调用 ginit API 还需要生产 CORS 或 redirect 适配后再做浏览器验证。
+
+## 2026-07-26 当前远程登录地址与本地/中继部署说明
+
+**用户需求 query**: 当前远程登录页面的地址是多少？当前的本地使用端和远程中继（后续配置到有公网服务的阿里云）都是部署在本地么？
+
+**最终内容总结**:
+✅ 当前 Paseo Web 客户端地址为 `https://app.paseo.sh`；当前本机部署的 daemon 容器通过 `0.0.0.0:8234 -> 容器 6767` 提供本地/局域网入口，局域网地址为 `http://192.168.3.2:8234`，本机可用 `http://127.0.0.1:8234`。
+✅ 当前本机 Paseo 配置启用了 relay，但没有配置独立公网 relay endpoint；ginit Hub 地址是 `wss://ginit.opensii.ai/ws/v1/paseo`。因此“本地使用端/daemon”在本机；真正的远程 relay 应部署到阿里云公网服务，不能把当前本地 8234 端口误认为 relay。
+
+## 2026-07-26 Ginit + Paseo 完整架构文档
+
+**用户需求 query**: 帮我把上面总结的所有内容详细写到一个 md 文档，全部写入一个文档。
+
+**最终内容总结**:
+✅ 新增完整文档 `docs/ginit-paseo-complete-architecture.md`，统一记录旧版扫码配对架构、新版 ginit CLI/Paseo daemon/ginit Hub/阿里云 relay/手机 Web 客户端架构、当前地址、Docker 端口映射、安装流程、飞书登录自动发现主机、跨服务器方案、无公网 IP/无 SSH 方案、安全边界、测试结果和遗留事项。
+✅ 文档明确区分：`https://app.paseo.sh` 是远程 Web 客户端；本机 `http://127.0.0.1:8234`/局域网 `http://192.168.3.2:8234` 是 Paseo daemon/Web UI；`wss://ginit.opensii.ai/ws/v1/paseo` 是 ginit Hub；阿里云 Paseo relay 是独立的数据面中继，当前尚需正式部署公网 endpoint。
+✅ 已运行文档格式化和 git diff 检查；文档保存了当前已完成能力和不能过度宣称的遗留项。
