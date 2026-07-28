@@ -322,6 +322,25 @@ W: testbed 的 /opt/ginit/ginit 是旧版（无 paseo_hub.py/paseo_hub_gateway.p
 4. **`navigator.getBattery is not a function` 与 relay 完全无关**。报错栈来自 `chrome-extension://hlofigcdgjlnalbkeeinfcjceabpamci/js/contentscript.js` —— 是用户浏览器装的某个扩展调用已被 Chrome 移除的 `navigator.getBattery()` API（Chrome 88+ 已删除），属插件自身 bug。忽略或在 chrome://extensions 卸载该扩展即可。
 
 **健康检查速查**：
+
 - 浏览器看到 `426 Upgrade Required` → relay 端点活着，只是不接受普通 HTTP。
 - `curl http://150.5.173.43:8234/health` 应返回 `{"status":"ok","sessions":N}`，N≥1 表示至少 1 条 daemon control socket 在线。
 - 真正的服务挂掉会返回 `000`（连接被拒/超时），不是 426。
+
+---
+
+## 2026-07-28 - 飞书授权报 20029 / No permission + hub.hello 404（裸 IP 8235 方案）
+
+**Q（问题）**：staging 飞书登录三连坑：① 授权页报 `Invalid redirect URL Error code: 20029`（回调未在应用后台登记）；② 换应用后报 `You don't have the access`（应用对当前租户不可用）；③ 授权成功 enroll 后 daemon 连 hub 被 `404` 拒绝（`hubUrl` 从 REST base URL 推导成 `ws://150.5.173.43:8090/ws/v1/paseo`，但 WS 网关在 8235）。
+
+**W（解决方法）**：
+
+1. **20029（redirect URL 未登记）**：staging 原配置回调是 `https://staging.ginit.opensii.ai/auth/feishu/callback`，但用户要求走裸 IP `150.5.173.43:8235`。改 testbed `/etc/ginit.env`：`FEISHU_REDIRECT_URI=http://150.5.173.43:8235/auth/feishu/callback`，并让用户在飞书开发者后台（该应用 → 安全设置 → 重定向 URL）登记**完全一致**的这个地址。教训：飞书校验的是 exact match，域名/端口/路径任一不同都会 20029。
+
+2. **8235 同时服务 WS 和 HTTP**：8235 是 ginit 的 websockets 网关端口（`/ws/v1/*`），浏览器访问 `/auth/feishu/*` 默认报 "cannot access a WebSocket server directly"。利用 websockets 的 `process_request(path, headers)` 钩子（legacy API，websockets 13.1 在用的就是这个签名，**不是**新 asyncio API 的 `(connection, request)`）在 WS 升级前拦截 `/auth/*`，用 `_Stub`（只实现 `_redirect`/`_send_html`/`_send`）复用 `Handler.auth_feishu_start/callback` 的完整逻辑。同一进程同一端口，WS 升级和 HTTP GET 分流完成。
+
+3. **No permission（应用对租户不可用）**：staging 原 SSO 应用 `cli_a969a44482389cd2` 对 GAIR 租户不可用（注意：该应用其实是 testbed IM connector/bot 的专用应用，本来就不该兼做 SSO——同一应用长连接事件会在所有在线客户端间负载均衡，混用会让 bot 能发不能收）。按用户指定换成 `cli_aacb827247389bde`（「王少敬的飞书 CLI」，GAIR 可用），更新 `/etc/ginit.env` 的 `FEISHU_APP_ID`/`FEISHU_APP_SECRET` 并重启。**已写入 docs/testbed.md：上线生产必须换生产专用应用**。授权页多租户时默认停在「中国数联」，需要点 GAIR 那行的 Select 再 Authorize。
+
+4. **hub.hello 404（split gateway 端口）**：`toHubWebSocketUrl` 只换 scheme 不换端口，HTTP API 在 8090、hub WS 网关在 8235 的部署下推导出错误 URL。给 paseo `ginit-enroller.ts` 加 `GINIT_PASEO_HUB_WS_PORT` 环境变量覆盖（含 vitest 用例，14/14 通过）；同时手动把已持久化的 `daemon.hub.url` 改成 `ws://150.5.173.43:8235/ws/v1/paseo` 并重启容器。随后 `Sent hub.hello` → `Hub welcome received; device online` → `hub.workspace.snapshot` 全通。
+
+5. **端到端验证（Playwright 真实飞书授权）**：device flow → GAIR 账号授权 → `hub.login_ginit` enroll 成功（deviceId `eab4adff...`）→ PATCH relay metadata（`150.5.173.43:8234`）→ staging DB `paseo_devices` 行 `status=online, relay_endpoint=150.5.173.43:8234, user_id=3`（飞书 union_id `on_efca0ea9...` 绑定）→ 经 relay E2EE 连接 RPC 确认 `enrolled: true`。A→B→C 全链路在 testbed 闭环。

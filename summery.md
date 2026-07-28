@@ -204,3 +204,15 @@
 ✅ **relay 健康验证**：`curl http://150.5.173.43:8234/health` 返回 `200 {"status":"ok","sessions":1}`——relay 正常且已有 1 条 daemon control socket 在线。真正挂掉会返回 000 连接被拒，不是 426。
 ✅ **`navigator.getBattery` 错误与 relay 无关**：来自 chrome-extension `hlofigcdgjlnalbkeeinfcjceabpamci`，是用户浏览器扩展调用了 Chrome 88+ 已删除的 `navigator.getBattery()` API，属插件 bug，忽略或卸载该扩展即可。
 📌 **使用建议**：relay 是数据面，不渲染 HTML，浏览器访问没有意义。健康检查用 `/health`；要 Web UI 应访问 daemon 端口（本机 Docker `paseo` 容器的 8234→6767，注意跟 staging relay 同名但不同机）。已记录到 QW.md。
+
+---
+
+## 2026-07-28 staging 飞书授权打通 + daemon enroll 上线（裸 IP 8235）
+
+**用户需求 query**: 浏览器没看到飞书授权页（本地飞书已登录）；改用 GAIR 账户；回调不是 staging.ginit.opensii.ai 而是 150.5.173.43:8235；使用应用 cli_aacb827247389bde 并在文档记录（后续上线生产还得换）。
+
+**最终内容总结**:
+✅ 全链路打通:A 端 daemon(deviceId eab4adff) 经飞书 device flow(GAIR 账号「王少敬」真实授权) enroll 到 testbed staging,staging DB `paseo_devices` 显示 online + `relay_endpoint=150.5.173.43:8234` + 绑定飞书 union_id;经 relay(8234) E2EE 连接验证 enrolled=true。A→B→C 在 testbed 闭环。
+✅ 修了三层问题:① 飞书 20029——回调改为 `http://150.5.173.43:8235/auth/feishu/callback` 并在应用后台登记;② 8235 端口 WS/HTTP 分流——用 websockets `process_request` 钩子在 WS 网关上直接服务 `/auth/feishu/*`(注意 websockets 13.1 是 legacy 签名 `(path, headers)`);③ enroll 后 hub 404——`GINIT_PASEO_HUB_WS_PORT` 环境变量解决 HTTP(8090)/WS(8235) 分离部署的 URL 推导(含单测 14/14)。
+✅ 配置落盘:testbed `/etc/ginit.env` 用 `cli_aacb827247389bde`(GAIR 可用;文档已标注**上线生产必须换生产专用应用**,且 IM bot 必须独立应用);A 端 daemon `hub.url=ws://150.5.173.43:8235/ws/v1/paseo`、relay=`150.5.173.43:8234`;App 的 GINIT_BASE_URL=`http://150.5.173.43:8090`。paseo `4dac1426c` + ginit `a404a2a` 已推送。
+⏳ 遗留:App 代码改动需重建 `paseo:local-ginit` 镜像才对 8234 web UI 生效;`GINIT_PASEO_HUB_WS_PORT=8235` 需写进 daemon 容器环境(compose)否则下次重新 enroll 还会推导出 8090;C 端(手机/网页)经飞书登录 staging 拉设备列表再连 relay 的完整浏览器验证未做。
