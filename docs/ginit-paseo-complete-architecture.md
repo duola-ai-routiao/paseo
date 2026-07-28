@@ -958,6 +958,32 @@ ginit Hub 只做控制面，Paseo relay 负责数据面。不要把完整 Paseo 
 
 每个协议新增字段都必须 optional，并用 `COMPAT(...)` 标记旧协议兼容代码及删除时间。
 
+### 13.7 Web 宿主即设备的拆除（2026-07-28 已完成代码侧）
+
+第 13.6 节第 4 步已在代码侧落地。paseo-web（8234 容器 / B 的 8236）不再 enroll 成 hub device，改成「匿名/只读 hub 会话」：
+
+```text
+[旧架构]  paseo-web ──(enroll 作为 Device)──> Hub
+[新架构]  paseo-web ──(仅提供静态网页 & JS Bundle)──> 浏览器
+                                                    │
+                                            (以 User Token 身份/只读)
+                                                    ▼
+                                                   Hub (只列出真正 Device)
+```
+
+代码改动：
+
+1. **协议**：`hub.login_ginit.request` 新增 optional `cacheOnly`（`COMPAT(hubLoginGinitCacheOnly)`，v0.2.0-beta.5）。`cacheOnly: true` 时 daemon 只缓存账号 token，**不 enroll 设备**；新增 `hub.account_token.request/response`（只读账号 token 移交）。
+2. **Server**：`GinitHubEnroller` 新增 `cacheAccountToken()`（只写 `ginitBaseUrl`/`ginitToken`，绝不写 `enabled`/`deviceId`/`token`/`url`，HubConnector 保持离线）与 `accountToken()`（只读移交，不要求 enrolled）。
+3. **App Welcome 页**（`ginit-feishu-welcome.tsx`）：飞书登录后改为 `hubLoginGinit(..., { cacheOnly: true })` 只缓存账号 token，再用 User Token 直接 `GET /api/paseo/devices` 列设备（CORS 受限时回退 daemon 代理），并显示只读设备列表。**不再调用 enroll**。
+4. **App Host 设置页**（`host-page.tsx`）：宿主未 enrolled 但持有账号 token 时渲染只读提示「This web host is read-only — it is not enrolled as a device.」+ 设备列表；`isSelf` 标注只在宿主真正 enrolled 时才显示。
+5. **部署**：8234 容器的 `daemon.hub` 已剥掉 `enabled/url/deviceId/token`，只留 `ginitBaseUrl`/`ginitToken`（供只读代理）。重启后日志 `Hub not configured; connector idle until enrollment`，不再作为 device 上线。
+6. **脚本**：删除一次性 enroll 脚本 `scripts/ginit-enroll.mjs`、`ginit-enroll-direct.mjs`、`_enroll-bare-ip.mjs`。
+
+设备列表现在只包含真正跑了 ginit 被控端服务（enroll 过）的 daemon；paseo-web 宿主不再出现在列表里。
+
+剩余部署动作：把含新 bundle/server 的镜像同步到 B（8236 paseo-web）并同样剥掉其 `daemon.hub` 设备身份。
+
 ---
 
 ## 14. 当前遗留事项

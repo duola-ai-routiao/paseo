@@ -124,6 +124,33 @@ describe.skipIf(process.platform === "win32")("GinitHubEnroller", () => {
     }
   });
 
+  test("PASEO_GINIT_HUB_WS_URL overrides both scheme-swap and the legacy port env", async () => {
+    process.env.PASEO_GINIT_HUB_WS_URL = "wss://hub.example.com/ws/v1/paseo";
+    process.env.GINIT_PASEO_HUB_WS_PORT = "8235";
+    try {
+      const home = await mkdtemp(path.join(tmpdir(), "paseo-ginit-wsurl-"));
+      const fetchImpl = vi.fn(async (url: string | URL | Request) => {
+        const href = url.toString();
+        if (href.endsWith("/api/paseo/enrollments")) {
+          return jsonResponse({
+            enrollment_id: "e",
+            ticket: "pet_x",
+            expires_at: "2099-01-01T00:00:00Z",
+          });
+        }
+        return jsonResponse({ device_id: "dev-9", token: "pht_9" });
+      }) as unknown as typeof fetch;
+
+      const enroller = new GinitHubEnroller({ paseoHome: home, logger: silentLogger, fetchImpl });
+      const result = await enroller.enroll("http://150.5.173.43:8090", "ginit_tok");
+      expect(result.hubUrl).toBe("wss://hub.example.com/ws/v1/paseo");
+      expect(loadPersistedConfig(home).daemon?.hub?.url).toBe("wss://hub.example.com/ws/v1/paseo");
+    } finally {
+      delete process.env.PASEO_GINIT_HUB_WS_URL;
+      delete process.env.GINIT_PASEO_HUB_WS_PORT;
+    }
+  });
+
   test("getStatus reflects persisted enrollment", async () => {
     const home = await mkdtemp(path.join(tmpdir(), "paseo-ginit-status-"));
     const enroller = new GinitHubEnroller({ paseoHome: home, logger: silentLogger });

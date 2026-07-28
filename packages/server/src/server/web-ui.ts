@@ -144,6 +144,15 @@ export interface WebUiMiddlewareOptions {
   distDir: string | null;
   label: string;
   logger: Logger;
+  /**
+   * Runtime Ginit hub endpoints advertised to the browser via an injected
+   * script tag. The web UI reads these instead of hardcoding an environment
+   * URL in the bundle. Injected only when `ginit.baseUrl` is configured.
+   */
+  ginit?: {
+    baseUrl?: string;
+    hubWsUrl?: string;
+  };
 }
 
 export function createWebUiMiddleware(options: WebUiMiddlewareOptions): RequestHandler {
@@ -175,7 +184,7 @@ export function createWebUiMiddleware(options: WebUiMiddlewareOptions): RequestH
       return;
     }
 
-    serveWebUiFile({ distDir, requestPath: req.path, label, req, res });
+    serveWebUiFile({ distDir, requestPath: req.path, label, req, res, ginit: options.ginit });
   };
 }
 
@@ -185,10 +194,11 @@ interface ServeWebUiFileOptions {
   label: string;
   req: Parameters<RequestHandler>[0];
   res: Parameters<RequestHandler>[1];
+  ginit?: WebUiMiddlewareOptions["ginit"];
 }
 
 function serveWebUiFile(options: ServeWebUiFileOptions): void {
-  const { distDir, requestPath, label, req, res } = options;
+  const { distDir, requestPath, label, req, res, ginit } = options;
 
   const target = resolveTargetFile(distDir, requestPath);
   if (!target) {
@@ -213,7 +223,7 @@ function serveWebUiFile(options: ServeWebUiFileOptions): void {
   }
 
   if (isIndexHtml) {
-    sendIndexHtml(res, finalFile, req, label);
+    sendIndexHtml(res, finalFile, req, label, ginit);
     return;
   }
 
@@ -233,10 +243,11 @@ function sendIndexHtml(
   filePath: string,
   req: Parameters<RequestHandler>[0],
   label: string,
+  ginit?: WebUiMiddlewareOptions["ginit"],
 ): void {
   try {
     const html = readFileSync(filePath, "utf-8");
-    const injected = injectConnectionHint(html, req, label);
+    const injected = injectConnectionHint(html, req, label, ginit);
     res.status(200).send(injected);
   } catch {
     res.status(500).end();
@@ -254,6 +265,7 @@ function injectConnectionHint(
   html: string,
   req: Parameters<RequestHandler>[0],
   label: string,
+  ginit?: WebUiMiddlewareOptions["ginit"],
 ): string {
   const host = typeof req.headers.host === "string" ? req.headers.host : "";
   const useTls = req.protocol === "https";
@@ -262,10 +274,18 @@ function injectConnectionHint(
     useTls,
     label,
   };
-  const script = `<script>window.__PASEO_INITIAL_DAEMON_CONNECTION__=${serializeInlineScriptJson(hint)}</script>`;
+  const scripts: string[] = [
+    `<script>window.__PASEO_INITIAL_DAEMON_CONNECTION__=${serializeInlineScriptJson(hint)}</script>`,
+  ];
+  if (ginit?.baseUrl) {
+    scripts.push(
+      `<script>window.__PASEO_GINIT_CONFIG__=${serializeInlineScriptJson(ginit)}</script>`,
+    );
+  }
+  const injected = scripts.join("");
   const headClose = /<\/head>/i;
   if (headClose.test(html)) {
-    return html.replace(headClose, `${script}</head>`);
+    return html.replace(headClose, `${injected}</head>`);
   }
-  return script + html;
+  return injected + html;
 }

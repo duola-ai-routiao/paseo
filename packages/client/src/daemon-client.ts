@@ -4366,7 +4366,7 @@ export class DaemonClient {
   async hubLoginGinit(
     ginitBaseUrl: string,
     ginitToken: string,
-    requestId?: string,
+    options?: { cacheOnly?: boolean; requestId?: string },
   ): Promise<{
     requestId: string;
     success: boolean;
@@ -4375,8 +4375,13 @@ export class DaemonClient {
     error: string | null;
   }> {
     return this.sendCorrelatedSessionRequest({
-      requestId,
-      message: { type: "hub.login_ginit.request", ginitBaseUrl, ginitToken },
+      requestId: options?.requestId,
+      message: {
+        type: "hub.login_ginit.request",
+        ginitBaseUrl,
+        ginitToken,
+        ...(options?.cacheOnly ? { cacheOnly: true } : {}),
+      },
       responseType: "hub.login_ginit.response",
     });
   }
@@ -4436,6 +4441,20 @@ export class DaemonClient {
       requestId,
       message: { type: "hub.list_devices.request" },
       responseType: "hub.list_devices.response",
+    });
+  }
+
+  async hubAccountToken(requestId?: string): Promise<{
+    requestId: string;
+    success: boolean;
+    ginitBaseUrl: string | null;
+    ginitToken: string | null;
+    error: string | null;
+  }> {
+    return this.sendCorrelatedSessionRequest({
+      requestId,
+      message: { type: "hub.account_token.request" },
+      responseType: "hub.account_token.response",
     });
   }
 

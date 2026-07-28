@@ -26,6 +26,19 @@ export interface HubGinitEnroller {
     deviceCode: string,
   ): Promise<{ status: "pending" | "completed"; token: string | null }>;
   listDevices(): Promise<{ devices: HubGinitDeviceEntry[] }>;
+  /**
+   * Read-only account handoff for web/static hosts: returns the cached ginit
+   * user token + base URL so a browser client can call the hub account APIs
+   * (device list) directly, without enrolling this daemon as a device.
+   */
+  accountToken(): { ginitBaseUrl: string; ginitToken: string };
+  /**
+   * Caches a ginit account token on this daemon without enrolling it as a hub
+   * device. Used by web/static hosts (paseo-web): the browser logs in as the
+   * user and hands the user token to the daemon purely so later account
+   * reads (device list) can be proxied around the hub's missing CORS headers.
+   */
+  cacheAccountToken(ginitBaseUrl: string, ginitToken: string): void;
 }
 
 export interface HubGinitDeviceEntry {
@@ -86,12 +99,23 @@ const DeviceListResultSchema = z.object({
 
 /**
  * Turns a ginit-server HTTP origin into the Paseo Hub WebSocket URL.
- * Mirrors the ginit-cli logic: swap only the scheme so ports/paths survive.
- * Deployments that split HTTP and WebSocket gateways onto different ports
- * (e.g. testbed: HTTP API on 8090, hub WS gateway on 8235) advertise the WS
- * port via GINIT_PASEO_HUB_WS_PORT.
+ * Resolution order:
+ *   1. `PASEO_GINIT_HUB_WS_URL` — canonical runtime override (preferred; set
+ *      this in every deployment instead of the port-based derivation below).
+ *   2. Scheme swap of the base URL (`https://` → `wss://`, `http://` →
+ *      `ws://`), preserving host/port/path. Correct whenever HTTP and WS live
+ *      behind the same origin (the normal Caddy deployment).
+ *
+ * COMPAT(ginitHubWsPortEnv): the legacy `GINIT_PASEO_HUB_WS_PORT` port-override
+ * env is kept for split testbed deployments (HTTP on 8090, WS on 8235) added in
+ * v0.2.0-beta.5. Drop it once those deployments set PASEO_GINIT_HUB_WS_URL
+ * (target removal: 2027-01-28).
  */
 function toHubWebSocketUrl(ginitBaseUrl: string): string {
+  const explicitWsUrl = process.env.PASEO_GINIT_HUB_WS_URL?.trim();
+  if (explicitWsUrl) {
+    return explicitWsUrl.replace(/\/+$/, "");
+  }
   const trimmed = ginitBaseUrl.replace(/\/+$/, "");
   const wsBase = trimmed.replace(/^https:\/\//, "wss://").replace(/^http:\/\//, "ws://");
   const wsPort = process.env.GINIT_PASEO_HUB_WS_PORT?.trim();
@@ -311,5 +335,46 @@ export class GinitHubEnroller implements HubGinitEnroller {
         isSelf: item.device_id === hub.deviceId,
       })),
     };
+  }
+
+  /**
+   * Read-only account handoff. Unlike `listDevices`, this does not require the
+   * daemon to be enrolled as a hub device — only a cached account token from a
+   * previous login. Static web hosts (paseo-web) use this so the browser can
+   * query the hub directly as the user instead of enrolling the host.
+   */
+  accountToken(): { ginitBaseUrl: string; ginitToken: string } {
+    const hub = loadPersistedConfig(this.options.paseoHome).daemon?.hub;
+    if (!hub?.ginitBaseUrl || !hub.ginitToken) {
+      throw new Error("No cached ginit account token on this host; run Login with Feishu first");
+    }
+    return { ginitBaseUrl: hub.ginitBaseUrl, ginitToken: hub.ginitToken };
+  }
+
+  /**
+   * Caches the account token without touching device enrollment. If a hub
+   * config already exists (an enrolled daemon re-logging in to refresh an
+   * expired token), only the account fields are updated; otherwise a
+   * disabled, device-less hub block is written so `accountToken()`/
+   * `listDevices()` can serve read-only account proxies. This never sets
+   * `enabled`, `deviceId`, `token`, or `url`, so the HubConnector stays
+   * offline and the daemon never appears as a hub device.
+   */
+  cacheAccountToken(ginitBaseUrl: string, ginitToken: string): void {
+    const normalized = ginitBaseUrl.replace(/\/+$/, "");
+    const config = loadPersistedConfig(this.options.paseoHome);
+    const existingHub = config.daemon?.hub;
+    savePersistedConfig(this.options.paseoHome, {
+      ...config,
+      daemon: {
+        ...config.daemon,
+        hub: {
+          ...existingHub,
+          ginitBaseUrl: normalized,
+          ginitToken,
+        },
+      },
+    });
+    this.logger.info("Cached ginit account token (no device enrollment)");
   }
 }

@@ -73,6 +73,7 @@ function createApp(options: {
   enabled: boolean;
   distDir: string | null;
   publicDir?: string;
+  ginit?: { baseUrl?: string; hubWsUrl?: string };
 }): express.Application {
   const app = express();
   app.use(
@@ -81,6 +82,7 @@ function createApp(options: {
       distDir: options.distDir,
       label: "test-label",
       logger,
+      ...(options.ginit ? { ginit: options.ginit } : {}),
     }),
   );
   app.get("/api/health", (_req, res) => res.json({ ok: true }));
@@ -163,6 +165,31 @@ describe("daemon web UI route module", () => {
     const res = await request(app, "GET", "/index.html");
 
     expect(res.body).toMatch(/window\.__PASEO_INITIAL_DAEMON_CONNECTION__.*<\/head>/);
+  });
+
+  test("injects ginit runtime config when a hub base URL is configured", async () => {
+    const app = createApp({
+      enabled: true,
+      distDir,
+      publicDir,
+      ginit: { baseUrl: "https://hub.example.com", hubWsUrl: "wss://hub.example.com/ws/v1/paseo" },
+    });
+
+    const res = await request(app, "GET", "/");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toContain("window.__PASEO_GINIT_CONFIG__");
+    expect(res.body).toContain('"baseUrl":"https://hub.example.com"');
+    expect(res.body).toContain('"hubWsUrl":"wss://hub.example.com/ws/v1/paseo"');
+  });
+
+  test("omits ginit runtime config when no hub is configured", async () => {
+    const app = createApp({ enabled: true, distDir, publicDir });
+
+    const res = await request(app, "GET", "/");
+
+    expect(res.status).toBe(200);
+    expect(res.body).not.toContain("__PASEO_GINIT_CONFIG__");
   });
 
   test("escapes the injected host hint for inline script safety", async () => {

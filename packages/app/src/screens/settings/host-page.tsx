@@ -32,6 +32,7 @@ import {
   TerminalProfileEditModal,
 } from "@/screens/settings/terminal-profile-edit-modal";
 import { getIsElectron } from "@/constants/platform";
+import { getGinitBaseUrl } from "@/constants/ginit-config";
 import {
   getDesktopDaemonStatus,
   restartDesktopDaemon,
@@ -498,9 +499,10 @@ function GinitHubSection({ serverId }: { serverId: string }) {
       .hubGetEnrollStatus()
       .then((res) => {
         setEnrollStatus({ enrolled: res.enrolled, deviceId: res.deviceId, hubUrl: res.hubUrl });
-        if (res.enrolled) {
-          void refreshDevices();
-        }
+        // Web/static hosts are not enrolled but may still hold a cached
+        // account token from a previous Feishu login — they can list devices
+        // read-only without being a hub device.
+        void refreshDevices();
         return undefined;
       })
       .catch((err) => console.warn("[GinitHubSection] Failed to fetch status", err));
@@ -519,10 +521,10 @@ function GinitHubSection({ serverId }: { serverId: string }) {
     setErrorMessage(null);
 
     try {
-      const GINIT_BASE_URL = "http://150.5.173.43:8090";
+      const ginitBaseUrl = getGinitBaseUrl();
       // Device flow runs through the daemon so the browser never fetches the
       // ginit server directly (the ginit server sends no CORS headers).
-      const start = await daemonClient.hubDeviceStart(GINIT_BASE_URL);
+      const start = await daemonClient.hubDeviceStart(ginitBaseUrl);
 
       const { openExternalUrl } = await import("@/utils/open-external-url");
       await openExternalUrl(start.verificationUri);
@@ -531,7 +533,7 @@ function GinitHubSection({ serverId }: { serverId: string }) {
       let token: string | null = null;
       while (Date.now() < deadline) {
         await new Promise((resolve) => setTimeout(resolve, 2000));
-        const poll = await daemonClient.hubDevicePoll(GINIT_BASE_URL, start.deviceCode);
+        const poll = await daemonClient.hubDevicePoll(ginitBaseUrl, start.deviceCode);
         if (poll.status === "completed") {
           token = poll.token;
           break;
@@ -539,17 +541,20 @@ function GinitHubSection({ serverId }: { serverId: string }) {
       }
       if (!token) throw new Error("Login timeout");
 
-      const enrollRes = await daemonClient.hubLoginGinit(GINIT_BASE_URL, token);
+      const enrollRes = await daemonClient.hubLoginGinit(ginitBaseUrl, token);
       if (!enrollRes.success) {
         throw new Error(enrollRes.error || "Enrollment failed");
       }
 
+      // A cache-only login returns no device identity: the host is a
+      // web/static read-only view, not a hub device.
+      const enrolled = enrollRes.deviceId !== null;
       setEnrollStatus({
-        enrolled: true,
+        enrolled,
         deviceId: enrollRes.deviceId,
         hubUrl: enrollRes.hubUrl,
       });
-      // Enrollment persists a fresh account token, so the device list works
+      // Login persists a fresh account token, so the device list works
       // again even if a previous token had expired or was never cached.
       void refreshDevices();
     } catch (error) {
@@ -595,6 +600,42 @@ function GinitHubSection({ serverId }: { serverId: string }) {
 
   if (!daemonClient) return null;
 
+  // A web/static host is never a hub device: it only proxies read-only
+  // account reads for the browser. Once devices load, render the same
+  // read-only list as the welcome screen instead of an enroll action.
+  if (!enrollStatus?.enrolled && hubDevices !== null) {
+    return (
+      <SettingsSection title="Ginit Hub">
+        <View style={settingsStyles.card}>
+          <View style={ginitHubStyles.container}>
+            <Text style={ginitHubStyles.deviceMeta}>
+              This web host is read-only — it is not enrolled as a device. Only real daemons
+              enrolled via the ginit CLI appear below.
+            </Text>
+            <GinitDeviceList
+              devices={hubDevices}
+              isLoading={isDevicesLoading}
+              hosts={hosts}
+              applyingDeviceId={applyingDeviceId}
+              appliedDeviceId={appliedDeviceId}
+              defaultHostListen={defaultHostListen}
+              isSavingDefault={isSavingDefault}
+              needsRelogin={false}
+              isLoggingIn={isLoading}
+              isEnrolled={false}
+              onChangeDefaultListen={setDefaultHostListen}
+              onSaveDefault={handleSaveDefault}
+              onRefresh={refreshDevices}
+              onRelogin={handleLogin}
+              onApply={handleApplyDevice}
+            />
+            {errorMessage ? <Text style={ginitHubStyles.errorText}>{errorMessage}</Text> : null}
+          </View>
+        </View>
+      </SettingsSection>
+    );
+  }
+
   return (
     <SettingsSection title="Ginit Hub">
       <View style={settingsStyles.card}>
@@ -639,9 +680,10 @@ function GinitDeviceRow(props: {
   canApply: boolean;
   isApplying: boolean;
   isApplied: boolean;
+  isSelf: boolean;
   onApply: (device: HubListedDevice) => void;
 }) {
-  const { device, canApply, isApplying, isApplied, onApply } = props;
+  const { device, canApply, isApplying, isApplied, isSelf, onApply } = props;
   const handlePress = useCallback(() => {
     onApply(device);
   }, [onApply, device]);
@@ -658,7 +700,7 @@ function GinitDeviceRow(props: {
       <View style={ginitHubStyles.deviceInfo}>
         <Text style={ginitHubStyles.deviceName} numberOfLines={1}>
           {device.name}
-          {device.isSelf ? " (this host)" : ""}
+          {isSelf ? " (this host)" : ""}
         </Text>
         <Text style={ginitHubStyles.deviceMeta} numberOfLines={1}>
           {device.status} · {device.daemonId.slice(0, 8)}
@@ -687,6 +729,7 @@ function GinitDeviceList(props: {
   isSavingDefault: boolean;
   needsRelogin: boolean;
   isLoggingIn: boolean;
+  isEnrolled?: boolean;
   onChangeDefaultListen: (value: string) => void;
   onSaveDefault: () => void;
   onRefresh: () => void;
@@ -703,6 +746,7 @@ function GinitDeviceList(props: {
     isSavingDefault,
     needsRelogin,
     isLoggingIn,
+    isEnrolled = true,
     onChangeDefaultListen,
     onSaveDefault,
     onRefresh,
@@ -757,6 +801,7 @@ function GinitDeviceList(props: {
             isApplied={
               appliedDeviceId === device.deviceId || (device.isSelf && defaultAlreadyAdded)
             }
+            isSelf={isEnrolled && device.isSelf}
             onApply={onApply}
           />
         ))

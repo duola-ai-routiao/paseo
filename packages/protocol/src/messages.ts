@@ -1158,6 +1158,13 @@ export const HubLoginGinitRequestSchema = z.object({
   requestId: z.string(),
   ginitBaseUrl: z.string().url(),
   ginitToken: z.string().min(1),
+  /**
+   * COMPAT(hubLoginGinitCacheOnly): added in v0.2.0-beta.5. When true, the
+   * daemon only caches the account token for read-only account proxies and
+   * does NOT enroll as a hub device (paseo-web static hosts). Old clients
+   * omit it and get the legacy enroll behavior.
+   */
+  cacheOnly: z.boolean().optional(),
 });
 
 export const HubGetEnrollStatusRequestSchema = z.object({
@@ -1180,6 +1187,11 @@ export const HubDevicePollRequestSchema = z.object({
 
 export const HubListDevicesRequestSchema = z.object({
   type: z.literal("hub.list_devices.request"),
+  requestId: z.string(),
+});
+
+export const HubAccountTokenRequestSchema = z.object({
+  type: z.literal("hub.account_token.request"),
   requestId: z.string(),
 });
 
@@ -2467,6 +2479,7 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   HubDeviceStartRequestSchema,
   HubDevicePollRequestSchema,
   HubListDevicesRequestSchema,
+  HubAccountTokenRequestSchema,
   DiagnosticsRequestSchema,
   GetDaemonConfigRequestMessageSchema,
   SetDaemonConfigRequestMessageSchema,
@@ -2600,6 +2613,7 @@ export type HubGetEnrollStatusRequest = z.infer<typeof HubGetEnrollStatusRequest
 export type HubDeviceStartRequest = z.infer<typeof HubDeviceStartRequestSchema>;
 export type HubDevicePollRequest = z.infer<typeof HubDevicePollRequestSchema>;
 export type HubListDevicesRequest = z.infer<typeof HubListDevicesRequestSchema>;
+export type HubAccountTokenRequest = z.infer<typeof HubAccountTokenRequestSchema>;
 
 // ============================================================================
 // Session Outbound Messages (Session emits these)
@@ -3831,6 +3845,17 @@ export const HubListDevicesResponseSchema = z.object({
     requestId: z.string(),
     success: z.boolean(),
     devices: z.array(HubListDeviceEntrySchema),
+    error: z.string().nullable(),
+  }),
+});
+
+export const HubAccountTokenResponseSchema = z.object({
+  type: z.literal("hub.account_token.response"),
+  payload: z.object({
+    requestId: z.string(),
+    success: z.boolean(),
+    ginitBaseUrl: z.string().nullable(),
+    ginitToken: z.string().nullable(),
     error: z.string().nullable(),
   }),
 });
@@ -5248,6 +5273,7 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   HubDeviceStartResponseSchema,
   HubDevicePollResponseSchema,
   HubListDevicesResponseSchema,
+  HubAccountTokenResponseSchema,
   DiagnosticsResponseSchema,
   GetDaemonConfigResponseMessageSchema,
   SetDaemonConfigResponseMessageSchema,
@@ -5365,6 +5391,7 @@ export type HubDeviceStartResponse = z.infer<typeof HubDeviceStartResponseSchema
 export type HubDevicePollResponse = z.infer<typeof HubDevicePollResponseSchema>;
 export type HubListDeviceEntry = z.infer<typeof HubListDeviceEntrySchema>;
 export type HubListDevicesResponse = z.infer<typeof HubListDevicesResponseSchema>;
+export type HubAccountTokenResponse = z.infer<typeof HubAccountTokenResponseSchema>;
 
 // Type exports for individual message types
 export type ActivityLogMessage = z.infer<typeof ActivityLogMessageSchema>;

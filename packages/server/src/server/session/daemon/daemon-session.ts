@@ -160,6 +160,22 @@ export class DaemonSession {
       if (!this.hubGinitEnroller) {
         throw new Error("Ginit Hub enrollment is unavailable");
       }
+      if (msg.cacheOnly) {
+        // Web/static host: cache the account token for read-only account
+        // proxies only — this daemon is NOT enrolled as a hub device.
+        this.hubGinitEnroller.cacheAccountToken(msg.ginitBaseUrl, msg.ginitToken);
+        this.host.emit({
+          type: "hub.login_ginit.response",
+          payload: {
+            requestId: msg.requestId,
+            success: true,
+            deviceId: null,
+            hubUrl: null,
+            error: null,
+          },
+        });
+        return;
+      }
       const result = await this.hubGinitEnroller.enroll(msg.ginitBaseUrl, msg.ginitToken);
       this.host.emit({
         type: "hub.login_ginit.response",
@@ -303,6 +319,39 @@ export class DaemonSession {
           requestId: msg.requestId,
           success: false,
           devices: [],
+          error: error instanceof Error ? error.message : String(error),
+        },
+      });
+    }
+  }
+
+  async handleHubAccountToken(
+    msg: Extract<SessionInboundMessage, { type: "hub.account_token.request" }>,
+  ): Promise<void> {
+    try {
+      if (!this.hubGinitEnroller) {
+        throw new Error("Ginit Hub account access is unavailable");
+      }
+      const result = this.hubGinitEnroller.accountToken();
+      this.host.emit({
+        type: "hub.account_token.response",
+        payload: {
+          requestId: msg.requestId,
+          success: true,
+          ginitBaseUrl: result.ginitBaseUrl,
+          ginitToken: result.ginitToken,
+          error: null,
+        },
+      });
+    } catch (error) {
+      this.logger.error({ err: error }, "Failed to hand off the Ginit account token");
+      this.host.emit({
+        type: "hub.account_token.response",
+        payload: {
+          requestId: msg.requestId,
+          success: false,
+          ginitBaseUrl: null,
+          ginitToken: null,
           error: error instanceof Error ? error.message : String(error),
         },
       });

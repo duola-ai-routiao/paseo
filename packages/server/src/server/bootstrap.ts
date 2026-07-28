@@ -409,6 +409,10 @@ export interface PaseoDaemonConfig {
     enabled: boolean;
     distDir: string | null;
   };
+  ginitHub?: {
+    baseUrl: string | null;
+    hubWsUrl: string | null;
+  };
   appBaseUrl?: string;
   auth?: DaemonAuthConfig;
   openai?: PaseoOpenAIConfig;
@@ -486,6 +490,10 @@ function mountWebUi(app: express.Application, config: PaseoDaemonConfig, logger:
       distDir: config.webUi?.distDir ?? null,
       label: getHostname(),
       logger,
+      ginit: {
+        ...(config.ginitHub?.baseUrl ? { baseUrl: config.ginitHub.baseUrl } : {}),
+        ...(config.ginitHub?.hubWsUrl ? { hubWsUrl: config.ginitHub.hubWsUrl } : {}),
+      },
     }),
   );
 }

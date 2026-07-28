@@ -193,6 +193,28 @@ interface ResolvedRelay {
   publicUseTls: boolean;
 }
 
+interface ResolvedGinitHub {
+  baseUrl: string | null;
+  hubWsUrl: string | null;
+}
+
+/**
+ * Resolves the ginit hub endpoints the daemon should advertise to its web UI
+ * and use for enrollment. Runtime-configurable so environments never need a
+ * rebuild: `PASEO_GINIT_BASE_URL` / `PASEO_GINIT_HUB_WS_URL` env vars win,
+ * then persisted `daemon.hub` values. Returns nulls when unconfigured — the
+ * web UI falls back to its last-known value and surfaces a setup hint.
+ */
+function resolveGinitHubConfig(input: {
+  env: NodeJS.ProcessEnv;
+  persisted: ReturnType<typeof loadPersistedConfig>;
+}): ResolvedGinitHub {
+  const hub = input.persisted.daemon?.hub;
+  const baseUrl = (input.env.PASEO_GINIT_BASE_URL ?? hub?.ginitBaseUrl ?? "").trim() || null;
+  const hubWsUrl = (input.env.PASEO_GINIT_HUB_WS_URL ?? hub?.url ?? "").trim() || null;
+  return { baseUrl, hubWsUrl };
+}
+
 interface ResolvedServiceProxy {
   publicBaseUrl: string | null;
   standaloneListen: string | null;
@@ -471,6 +493,7 @@ export function loadConfig(
     cliRelayEnabled: options?.cli?.relayEnabled,
     cliRelayUseTls: options?.cli?.relayUseTls,
   });
+  const ginitHub = resolveGinitHubConfig({ env, persisted });
   const serviceProxy = resolveServiceProxyConfig(env, persisted);
   const webUi = resolveWebUiConfig(paseoHome, env, options?.cli, persisted);
 
@@ -510,6 +533,7 @@ export function loadConfig(
     relayPublicEndpoint: relay.publicEndpoint,
     relayUseTls: relay.useTls,
     relayPublicUseTls: relay.publicUseTls,
+    ginitHub,
     serviceProxy,
     webUi,
     appBaseUrl,

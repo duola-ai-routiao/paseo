@@ -1,5 +1,23 @@
 # QW.md — Bug 修复记录
 
+## 2026-07-28 - 拆掉「Web 宿主即设备」：paseo-web 不 enroll，改匿名/只读 hub 会话
+
+**Q(问题)**:旧架构里 paseo-web（8234 容器 / B 的 8236）作为一台 Device enroll 到 ginit Hub，导致设备列表里混进一台不跑任何 agent 的「空 daemon」。要求：paseo-web 只提供静态网页 + JS Bundle，浏览器以飞书 User Token 身份只读查 Hub，设备列表只放真正跑 CLI 的 daemon。
+
+**W(解决方法/结论)**:代码侧已完成并验证，分五层：
+
+1. **协议**（`packages/protocol/src/messages.ts`）：`hub.login_ginit.request` 新增 optional `cacheOnly`（`COMPAT(hubLoginGinitCacheOnly)`，v0.2.0-beta.5）——`cacheOnly: true` 时 daemon 只缓存账号 token、**不 enroll 设备**；新增 `hub.account_token.request/response`（只读账号 token 移交）。全部 optional 字段，旧客户端/旧 daemon 双向兼容。
+2. **Server**（`ginit-enroller.ts`）：新增 `cacheAccountToken()`——只写 `ginitBaseUrl`/`ginitToken`，绝不写 `enabled`/`deviceId`/`token`/`url`，HubConnector 读不到完整 hub 配置就保持离线，daemon 永不作为 device 上线；`accountToken()` 只读移交，不要求 enrolled。
+3. **App Welcome 页**（`ginit-feishu-welcome.tsx`）：飞书登录后从「enroll 这台 host」改为 `hubLoginGinit(..., { cacheOnly: true })` 只缓存账号 token，再用 User Token 直接 `GET /api/paseo/devices` 列设备（hub 无 CORS 头时回退 daemon 代理读），登录后渲染只读设备列表（My hosts + Refresh），**不再 enroll**。
+4. **App Host 设置页**（`host-page.tsx`）：宿主未 enrolled 但持有账号 token 时渲染「This web host is read-only — it is not enrolled as a device.」+ 只读设备列表；`(this host)` 标注只在宿主真正 enrolled 时才显示（新增 `isEnrolled` prop 控制）。
+5. **部署 + 脚本**：8234 容器 `daemon.hub` 剥掉 `enabled/url/deviceId/token`、只留 `ginitBaseUrl`/`ginitToken`，重启后日志 `Hub not configured; connector idle until enrollment`，不再作为 device 上线；删除一次性 enroll 脚本 `scripts/ginit-enroll.mjs`、`ginit-enroll-direct.mjs`、`_enroll-bare-ip.mjs`。
+
+**并行合入的配套改动**（同一工作树内另一 agent 完成）：ginit 地址改为运行时注入（`PASEO_GINIT_BASE_URL`/`PASEO_GINIT_HUB_WS_URL` env → `web-ui.ts` 注入 `window.__PASEO_GINIT_CONFIG__` → app `constants/ginit-config.ts` 读取），消掉 app bundle 里的硬编码 IP。
+
+**验证**：`npm run typecheck` ✅、`npm run lint`（2878 文件）✅、`ginit-enroller.test.ts` + `hub-connector.test.ts` 19/19 ✅；8234 容器重启后 hub-connector 不再上线；Playwright 打开 `http://192.168.3.2:8234` Host 设置页，Ginit Hub 区只显示「Login with Feishu」，不再有「Device enrolled」。
+
+**遗留**：① B（150.5.173.43）的 paseo-web 8236 仍是旧镜像旧 bundle，需同步新镜像并同样剥离其 `daemon.hub` 设备身份（其 deviceId `2ecbaaa4-…` 还挂在 hub 上）；② 本机 docker 缺 buildx 无法本地构建镜像，需在能 build 的机器上 `docker build -f docker/base/Dockerfile` 或走 CI；③ 本机 node_modules 曾被并行 npm 操作打爆（278 包 vs lock 2606），`npm install` 修复后可正常 `build:daemon-web-ui` + `npm pack` 组镜像。
+
 ## 2026-07-28 - 过滤 8236 网页里的生产地址 staging.ginit.opensii.ai,改为测试环境裸 IP
 
 **Q(问题)**:用户要求把 `https://staging.ginit.opensii.ai`(生产/旧测试域名)从 8236 网页里过滤掉,改成测试环境地址,配置在「环境设置」里。

@@ -1981,6 +1981,8 @@ export class Session {
         return this.daemonSession.handleHubDevicePoll(msg);
       case "hub.list_devices.request":
         return this.daemonSession.handleHubListDevices(msg);
+      case "hub.account_token.request":
+        return this.daemonSession.handleHubAccountToken(msg);
       case "diagnostics.request":
         return this.daemonSession.handleDiagnosticsRequest(msg);
       case "daemon.update.request":
