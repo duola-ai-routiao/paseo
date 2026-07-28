@@ -1,7 +1,6 @@
 import { useCallback, useState } from "react";
 import { Text, View } from "react-native";
 import { LogIn } from "lucide-react-native";
-import AsyncStorage from "@react-native-async-storage/async-storage";
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import { Button } from "@/components/ui/button";
 import {
@@ -10,36 +9,14 @@ import {
   useHostMutations,
   useHosts,
 } from "@/runtime/host-runtime";
-import type { HostMutations } from "@/runtime/host-runtime";
 import { openExternalUrl } from "@/utils/open-external-url";
 import { StyleSheet } from "react-native-unistyles";
 
-const GINIT_BASE_URL = resolveGinitBaseUrl();
-
-function resolveGinitBaseUrl(): string {
-  // Local/self-hosted deployments can point the Web UI at a co-located ginit
-  // server by setting window.__PASEO_GINIT_BASE_URL__ or serving the UI from
-  // the LAN. Production (app.paseo.sh) always uses the canonical hub.
-  if (typeof window !== "undefined") {
-    const injected = (window as { __PASEO_GINIT_BASE_URL__?: string }).__PASEO_GINIT_BASE_URL__;
-    if (typeof injected === "string" && injected.trim()) {
-      return injected.trim().replace(/\/+$/, "");
-    }
-    const origin = window.location?.origin ?? "";
-    if (origin.startsWith("http://127.0.0.1:") || origin.startsWith("http://localhost:")) {
-      return `${window.location.protocol}//${window.location.hostname}:18080`;
-    }
-    if (
-      /^https?:\/\/(10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+|192\.168\.\d+\.\d+)(:\d+)?$/.test(
-        origin,
-      )
-    ) {
-      return `${window.location.protocol}//${window.location.hostname}:18080`;
-    }
-  }
-  return "https://staging.ginit.opensii.ai";
-}
-const HOST_PASSWORD_STORAGE_KEY = "@paseo:host-password-v1";
+/**
+ * ginit base URL for the Feishu device flow. Bare-IP testbed deployment:
+ * ginit-server on the relay host (8090 = HTTP API, 8235 = hub WS gateway).
+ */
+const GINIT_BASE_URL = "http://150.5.173.43:8090";
 
 function findConnectedClient(): DaemonClient | null {
   const store = getHostRuntimeStore();
@@ -52,40 +29,10 @@ function findConnectedClient(): DaemonClient | null {
   return null;
 }
 
-/**
- * Probes the daemon that served this page (window.location.host). The daemon
- * may require a password; prompt once and cache it so the host registry entry
- * keeps reconnecting on later visits.
- */
-async function probePageDaemon(
-  probeAndUpsertDirectConnection: HostMutations["probeAndUpsertDirectConnection"],
-): Promise<DaemonClient> {
-  let password = await AsyncStorage.getItem(HOST_PASSWORD_STORAGE_KEY);
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    try {
-      const probed = await probeAndUpsertDirectConnection({
-        endpoint: window.location.host,
-        ...(password ? { password } : {}),
-      });
-      const client = getHostRuntimeStore().getSnapshot(probed.serverId)?.client;
-      if (client) return client;
-      throw new Error("Connected to the host but no runtime client is available.");
-    } catch (cause) {
-      const message = cause instanceof Error ? cause.message : String(cause);
-      if (!/password/i.test(message)) throw cause;
-      const entered = window.prompt("Enter the Paseo host password:", "");
-      if (entered === null) {
-        throw new Error("Login cancelled — host password required.", { cause });
-      }
-      password = entered.trim();
-      await AsyncStorage.setItem(HOST_PASSWORD_STORAGE_KEY, password);
-    }
-  }
-  throw new Error("Unable to connect to the local Paseo host with the provided password.");
-}
-
 async function resolveDaemonClient(
-  probeAndUpsertDirectConnection: HostMutations["probeAndUpsertDirectConnection"],
+  probeAndUpsertDirectConnection: ReturnType<
+    typeof useHostMutations
+  >["probeAndUpsertDirectConnection"],
 ): Promise<DaemonClient> {
   const connected = findConnectedClient();
   if (connected) return connected;
@@ -95,7 +42,12 @@ async function resolveDaemonClient(
   if (typeof window === "undefined" || !window.location?.host) {
     throw new Error("No local Paseo host is connected yet — start the daemon and retry.");
   }
-  return probePageDaemon(probeAndUpsertDirectConnection);
+  const probed = await probeAndUpsertDirectConnection({ endpoint: window.location.host });
+  const client = getHostRuntimeStore().getSnapshot(probed.serverId)?.client;
+  if (!client) {
+    throw new Error("Connected to the host but no runtime client is available.");
+  }
+  return client;
 }
 
 async function pollForGinitToken(
@@ -118,11 +70,14 @@ async function pollForGinitToken(
  * Feishu login on the welcome screen.
  *
  * The browser cannot call the ginit server directly — it sends no CORS
- * headers, so `fetch("https://ginit.opensii.ai/...")` from a LAN origin like
+ * headers, so `fetch(<ginit>/auth/device/start)` from a LAN origin like
  * http://192.168.3.2:8234 is blocked before it leaves the tab. The local
  * daemon already proxies the whole device-auth flow (see host-page.tsx), so
  * here we reuse the runtime client of any connected host and let the daemon
  * talk to ginit on our behalf.
+ *
+ * Auth boundary: the daemon itself is passwordless in the local-testbed
+ * topology; the Feishu login is what binds the user to enrolled hosts.
  */
 export function GinitFeishuWelcome() {
   useHosts();

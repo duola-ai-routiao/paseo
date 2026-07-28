@@ -87,10 +87,19 @@ const DeviceListResultSchema = z.object({
 /**
  * Turns a ginit-server HTTP origin into the Paseo Hub WebSocket URL.
  * Mirrors the ginit-cli logic: swap only the scheme so ports/paths survive.
+ * Deployments that split HTTP and WebSocket gateways onto different ports
+ * (e.g. testbed: HTTP API on 8090, hub WS gateway on 8235) advertise the WS
+ * port via GINIT_PASEO_HUB_WS_PORT.
  */
 function toHubWebSocketUrl(ginitBaseUrl: string): string {
   const trimmed = ginitBaseUrl.replace(/\/+$/, "");
   const wsBase = trimmed.replace(/^https:\/\//, "wss://").replace(/^http:\/\//, "ws://");
+  const wsPort = process.env.GINIT_PASEO_HUB_WS_PORT?.trim();
+  if (wsPort) {
+    const parsed = new URL(wsBase);
+    parsed.port = wsPort;
+    return `${parsed.toString().replace(/\/+$/, "")}/ws/v1/paseo`;
+  }
   return `${wsBase}/ws/v1/paseo`;
 }
 

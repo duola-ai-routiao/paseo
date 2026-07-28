@@ -117,7 +117,37 @@ paseo
 
 ### 2.3 ginit Hub
 
-当前 ginit Hub WebSocket 地址：
+当前 staging ginit Hub（部署在 ginit-testbed 150.5.173.43）有两组地址：
+
+**裸 IP 直连（当前 A/C 端默认，2026-07-28 起）**：
+
+```text
+http://150.5.173.43:8090               (HTTP REST: enrollments/devices/device flow)
+ws://150.5.173.43:8235/ws/v1/paseo     (Hub WebSocket)
+http://150.5.173.43:8235/auth/feishu/* (飞书 OAuth 浏览器跳转，与 WS 同端口)
+```
+
+**域名 + TLS（Caddy→8090/8235，仍需在飞书应用后台登记域名回调才可用于登录）**：
+
+```text
+https://staging.ginit.opensii.ai
+wss://staging.ginit.opensii.ai/ws/v1/paseo
+```
+
+staging 环境说明：
+
+- staging 的飞书 SSO 应用是 `cli_aacb827247389bde`（GAIR 账号可用）；
+  **上线生产时必须换成生产专用应用**，不要在生产使用该 app id；
+  IM connector (bot) 另有独立应用，不能与 SSO 应用混用。
+- 飞书回调当前配置为 `http://150.5.173.43:8235/auth/feishu/callback`
+  （8235 端口用 websockets 的 `process_request` 钩子同时服务 WS 升级和
+  `/auth/feishu/*` 的普通 HTTP 请求）。该回调地址必须在飞书应用后台
+  「安全设置 → 重定向 URL」里登记，否则授权页报 20029。
+- 数据面 relay 同机自托管：`ws://150.5.173.43:8234`
+  （`/opt/paseo-relay`，systemd `paseo-relay.service`，Node 实现，
+  复刻 Cloudflare DO 的 v1/v2 线协议）。
+
+prod ginit Hub WebSocket 地址（旧默认）：
 
 ```text
 wss://ginit.opensii.ai/ws/v1/paseo
