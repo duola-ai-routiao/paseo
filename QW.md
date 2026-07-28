@@ -1,5 +1,23 @@
 # QW.md — Bug 修复记录
 
+## 2026-07-28 - 过滤 8236 网页里的生产地址 staging.ginit.opensii.ai,改为测试环境裸 IP
+
+**Q(问题)**:用户要求把 `https://staging.ginit.opensii.ai`(生产/旧测试域名)从 8236 网页里过滤掉,改成测试环境地址,配置在「环境设置」里。
+
+**W(解决方法/结论)**:已确认并修复。
+
+1. **根因**:8236 网页最初用的是**旧 docker 镜像**(11h 前,镜像 ID `0dc0f997…`),里面 app bundle 仍含 `https://staging.ginit.opensii.ai`(来自 commit `cd6b5fd2a` 引入的 `ginit-feishu-welcome.tsx` 的 `resolveGinitBaseUrl()` fallback)。该 staging fallback 会让 enroll 把 `daemon.hub.url` 写成 `wss://staging…`,导致 502 拒绝。
+2. **源码早已修正**:commit `4dac1426c`(feat: enroll against bare-IP testbed hub)已把 `ginit-feishu-welcome.tsx` / `host-page.tsx` 的 ginit base 统一改成 **`http://150.5.173.43:8090`**(ginit-server HTTP API;hub WS 网关在 `8235`)。当前 app 源码全局 grep `staging` = 0 处。
+3. **修复动作**:把 A 机**最新镜像**(1h 前,`d82f42cd…`,bundle `index-f52c0b…` 已无 staging)重新 `docker load` 到 B,B 的 `paseo-web` 容器随镜像更新到新 bundle。实测:
+   - B 容器内 bundle:`grep staging` = 0,`grep 150.5.173.43:8090` = 2 ✅;
+   - `http://150.5.173.43:8236/` 返回的 index.html 引用 `index-f52c0b…`(新 bundle)✅;
+   - paseo-web `config.json` `hub.url=ws://150.5.173.43:8235/ws/v1/paseo` ✅;
+   - B DB 两台设备 `srv_nvcX` / `srv_oEgw` 均 `online` ✅。
+4. **传输踩坑**:本机到 B 的 SSH 在大文件/默认 KEX(`sntrup761x25519`)下频繁挂起(KEX 后卡住、exit 124)。**解决**:改用 `ssh -o KexAlgorithms=ecdh-sha2-nistp256` 即稳定;大文件(docker save 1.1GB/base64 20MB)仍易断,最终靠重新 `docker load` 已更新的镜像完成。小端口探测也用它。
+5. **「环境设置」里的地址**:app 的 ginit base 目前是**硬编码** `http://150.5.173.43:8090`(`ginit-feishu-welcome.tsx:19`、`host-page.tsx:522`),没有做成 UI 环境设置项。如需在「设置」里可配,需要新增一个 env/baseUrl 配置项(建议后续做,避免硬编码)。
+
+**结论**:8236 网页现在加载的 bundle 已**完全不含 staging.ginit.opensii.ai**,enroll/设备列表走裸 IP 测试环境 `150.5.173.43`(8090 API + 8235 hub WS + 8234 relay),两台设备 online。
+
 ## 2026-07-28 - 在 B(150.5.173.43) 部署 Paseo 网页到 8236 + 飞书登录打通(纯裸 IP 测试环境)
 
 **Q(问题)**:用户要求在 B(150.5.173.43)部署 Paseo 网页到 8236 端口,手机/网页端通过飞书登录即可看到已注册的 ginit/paseo 主机;全程用裸 IP(测试阶段),不走 staging 域名,8234 保持不动。
