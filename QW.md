@@ -1,5 +1,22 @@
 # QW.md — Bug 修复记录
 
+## 2026-07-28 - 在 B(150.5.173.43) 部署 Paseo 网页到 8236 + 飞书登录打通(纯裸 IP 测试环境)
+
+**Q(问题)**:用户要求在 B(150.5.173.43)部署 Paseo 网页到 8236 端口,手机/网页端通过飞书登录即可看到已注册的 ginit/paseo 主机;全程用裸 IP(测试阶段),不走 staging 域名,8234 保持不动。
+
+**W(解决方法/结论)**:已完成并验证。要点:
+
+1. **B 端已有服务**:ginit-server(控制面,`0.0.0.0:8090` HTTP API)+ ginit WS 网关(`0.0.0.0:8235`,`/ws/v1/paseo`)+ Paseo relay(`0.0.0.0:8234`,数据面)。裸 IP 均直接可达(无需 Caddy/域名)。
+2. **网页部署**:把 A 机的 `paseo:local-ginit` 镜像 `docker save | ssh docker load` 到 B,起容器 `paseo-web`(`-p 8236:6767 -e PASEO_WEB_UI_ENABLED=true`),config 设 `app.baseUrl=http://150.5.173.43:8236`、CORS 加该 origin、relay 指 `150.5.173.43:8234`。网页即开即用(Paseo UI)。
+3. **飞书登录**:B 的 ginit-server SSO 应用切到 `cli_aacb827247389bde`(GAIR 有权限),`/etc/ginit.env` 的 `FEISHU_APP_ID/FEISHU_APP_SECRET` 已更新,回调已登记 `http://150.5.173.43:8235/auth/feishu/callback`(8235 是 ginit WS 网关进程,同时托管 `/auth/feishu/callback`,**不是 8090**——用户登记的 8090 回调实际无效,飞书授权页用的是 8235)。⚠️ 注意:SSO 应用(aacb)与 IM connector bot 应用(`cli_a969…`,凭据在 `/root/.lark-cli/config.json`)相互独立,切换 SSO 不影响 bot。
+4. **飞书授权实战**:用 Playwright 打开 `http://150.5.173.43:8236` → Settings → Host → Login with Feishu → 选「Generative AI Lab (GAIR)/王少敬」→ Authorize → 回调 `{"status":"completed"}`。设备 `paseo-srv_oEgw`(deviceId `2ecbaaa4-…`)enroll 成功。
+5. **坑:enroll 写入的 hub.url 是 wss://staging(502 拒绝)**。app 里另有一处硬编码 `https://staging.ginit.opensii.ai`(在某个 enroll/login 路径,非 `ginit-feishu-welcome.tsx`/`host-page.tsx` 的 `http://150.5.173.43:8090`),导致 enroll 后 `daemon.hub.url=wss://staging.ginit.opensii.ai/ws/v1/paseo`,paseo-web 连 hub 一直 `Hub rejected (502)`、设备显示 offline。**修复**:直接改 paseo-web 的 `config.json` 把 `hub.url=ws://150.5.173.43:8235/ws/v1/paseo`、`ginitBaseUrl=http://150.5.173.43:8090`,重启容器 → `Sent hub.hello` → `Hub welcome; device online`。**根治需找到并改掉那处 staging 硬编码**(否则每次重新登录都会写回 staging)。
+6. **最终状态(全裸 IP)**:
+   - A daemon(`paseo-srv_nvcX`)→ B hub `ws://150.5.173.43:8235/ws/v1/paseo`,**online**,relay `150.5.173.43:8234`;
+   - paseo-web daemon(`paseo-srv_oEgw`)→ 同 hub,**online**;
+   - 网页 `http://150.5.173.43:8236` 飞书登录后「My enrolled hosts」显示两台设备均 **online**。
+   - B DB `paseo_devices`:`srv_nvcX`(relay_endpoint=150.5.173.43:8234, connection_ready=1)、`srv_oEgw`(relay_endpoint=NULL, connection_ready=0,只能被看不能被 relay 连——这是 B 本机 web daemon,符合预期)。
+
 ## 2026-07-28 - testbed(150.5.173.43) 部署 ginit-server 复盘与验证
 
 **Q（问题）**：用户要求在 `150.5.173.43` 部署 ginit-server（控制面：飞书 OAuth + Hub WS 网关），端口 `GINIT_PORT=8090` + `GINIT_WS_PORT=8091`（`/ws/v1/paseo` 在 WS 网关上）。先查 QW.md 确定版本。
