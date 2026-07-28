@@ -406,4 +406,108 @@ describe.skipIf(process.platform === "win32")("GinitHubEnroller", () => {
     await enroller.enroll("https://ginit.example.com/", "ginit_user_tok");
     await expect(enroller.listDevices()).rejects.toThrow(/device list failed \(401/i);
   });
+
+  test("cacheAccountToken persists account fields only, never a device identity", async () => {
+    const home = await mkdtemp(path.join(tmpdir(), "paseo-ginit-cache-only-"));
+    const enroller = new GinitHubEnroller({ paseoHome: home, logger: silentLogger });
+
+    enroller.cacheAccountToken("https://ginit.example.com/", "ginit_user_tok");
+
+    const config = loadPersistedConfig(home);
+    // Only the account-read fields are written. The device identity fields
+    // (enabled/url/deviceId/token) must stay absent so the HubConnector reads
+    // no complete hub config and the daemon never comes online as a device.
+    expect(config.daemon?.hub).toEqual({
+      ginitBaseUrl: "https://ginit.example.com",
+      ginitToken: "ginit_user_tok",
+    });
+    expect(enroller.getStatus()).toEqual({ enrolled: false, deviceId: null, hubUrl: null });
+  });
+
+  test("cacheAccountToken refreshes the token on an enrolled daemon without touching device fields", async () => {
+    const home = await mkdtemp(path.join(tmpdir(), "paseo-ginit-cache-refresh-"));
+    const fetchImpl = vi.fn(async (url: string | URL | Request) => {
+      const href = url.toString();
+      if (href.endsWith("/api/paseo/enrollments")) {
+        return jsonResponse({
+          enrollment_id: "e",
+          ticket: "pet_x",
+          expires_at: "2099-01-01T00:00:00Z",
+        });
+      }
+      if (href.endsWith("/api/paseo/enrollments/redeem")) {
+        return jsonResponse({ device_id: "dev-self", token: "pht_self" });
+      }
+      throw new Error(`unexpected url ${href}`);
+    }) as unknown as typeof fetch;
+
+    const enroller = new GinitHubEnroller({ paseoHome: home, logger: silentLogger, fetchImpl });
+    await enroller.enroll("https://ginit.example.com/", "ginit_old_tok");
+
+    enroller.cacheAccountToken("https://ginit.example.com/", "ginit_new_tok");
+
+    const config = loadPersistedConfig(home);
+    expect(config.daemon?.hub).toEqual({
+      enabled: true,
+      url: "wss://ginit.example.com/ws/v1/paseo",
+      deviceId: "dev-self",
+      token: "pht_self",
+      ginitBaseUrl: "https://ginit.example.com",
+      ginitToken: "ginit_new_tok",
+    });
+  });
+
+  test("accountToken hands off the cached token without requiring enrollment", async () => {
+    const home = await mkdtemp(path.join(tmpdir(), "paseo-ginit-handoff-"));
+    const enroller = new GinitHubEnroller({ paseoHome: home, logger: silentLogger });
+
+    enroller.cacheAccountToken("https://ginit.example.com/", "ginit_user_tok");
+
+    expect(enroller.accountToken()).toEqual({
+      ginitBaseUrl: "https://ginit.example.com",
+      ginitToken: "ginit_user_tok",
+    });
+  });
+
+  test("accountToken rejects when no account token is cached", async () => {
+    const home = await mkdtemp(path.join(tmpdir(), "paseo-ginit-handoff-none-"));
+    const enroller = new GinitHubEnroller({ paseoHome: home, logger: silentLogger });
+    expect(() => enroller.accountToken()).toThrow(/no cached ginit account token/i);
+  });
+
+  test("listDevices works on a cache-only (unenrolled) web host and marks nothing as self", async () => {
+    const home = await mkdtemp(path.join(tmpdir(), "paseo-ginit-list-readonly-"));
+    const fetchImpl = vi.fn(async (url: string | URL | Request) => {
+      const href = url.toString();
+      if (href.endsWith("/api/paseo/devices")) {
+        return jsonResponse({
+          items: [
+            {
+              device_id: "dev-a",
+              daemon_id: "daemon-a",
+              name: "paseo-a",
+              status: "online",
+              last_seen_at: "2026-07-28T00:00:00Z",
+            },
+          ],
+        });
+      }
+      throw new Error(`unexpected url ${href}`);
+    }) as unknown as typeof fetch;
+
+    const enroller = new GinitHubEnroller({ paseoHome: home, logger: silentLogger, fetchImpl });
+    enroller.cacheAccountToken("https://ginit.example.com/", "ginit_user_tok");
+
+    const result = await enroller.listDevices();
+    expect(result.devices).toEqual([
+      {
+        deviceId: "dev-a",
+        daemonId: "daemon-a",
+        name: "paseo-a",
+        status: "online",
+        lastSeenAt: "2026-07-28T00:00:00Z",
+        isSelf: false,
+      },
+    ]);
+  });
 });

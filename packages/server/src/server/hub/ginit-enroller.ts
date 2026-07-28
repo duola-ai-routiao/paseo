@@ -305,14 +305,14 @@ export class GinitHubEnroller implements HubGinitEnroller {
   }
 
   /**
-   * Lists the paseo devices bound to the same ginit account this daemon
-   * enrolled with, using the cached user token. `isSelf` marks this daemon's
-   * own row so clients can tell "the host I'm connected to" apart from the
-   * other enrolled hosts.
+   * Lists the paseo devices bound to the same ginit account, using the cached
+   * user token. `isSelf` marks this daemon's own row (only possible when the
+   * daemon is enrolled as a hub device). Read-only web/static hosts can also
+   * serve this list — they hold a cached account token but no device identity.
    */
   async listDevices(): Promise<{ devices: HubGinitDeviceEntry[] }> {
     const hub = loadPersistedConfig(this.options.paseoHome).daemon?.hub;
-    if (!hub?.enabled || !hub.ginitBaseUrl || !hub.ginitToken || !hub.deviceId) {
+    if (!hub?.ginitBaseUrl || !hub.ginitToken) {
       throw new Error(
         "Ginit hub device list needs a re-login (no cached account token); run Login with Feishu again",
       );
@@ -332,7 +332,7 @@ export class GinitHubEnroller implements HubGinitEnroller {
         name: item.name,
         status: item.status,
         lastSeenAt: item.last_seen_at ?? null,
-        isSelf: item.device_id === hub.deviceId,
+        isSelf: hub.deviceId !== undefined && item.device_id === hub.deviceId,
       })),
     };
   }
