@@ -27,6 +27,13 @@ export interface RelayHostConnection {
   relayEndpoint: string;
   useTls?: boolean;
   daemonPublicKeyB64: string;
+  /**
+   * TOFU trust record: fingerprint pinned the first time this key was seen
+   * for the owning host. A later hub/offer payload presenting a key whose
+   * fingerprint differs must be rejected (key rotation requires explicit
+   * re-pairing) instead of silently overwriting the trusted key.
+   */
+  trustedKeyFingerprint?: string;
 }
 
 export type HostConnection =
@@ -316,28 +323,37 @@ function normalizeStoredConnection(connection: unknown): HostConnection | null {
     return path ? { id: `pipe:${path}`, type: "directPipe", path } : null;
   }
   if (type === "relay") {
-    try {
-      const relayEndpoint = normalizeHostPort(
-        typeof record.relayEndpoint === "string" ? record.relayEndpoint : "",
-      );
-      const daemonPublicKeyB64 = (
-        typeof record.daemonPublicKeyB64 === "string" ? record.daemonPublicKeyB64 : ""
-      ).trim();
-      if (!daemonPublicKeyB64) return null;
-      const useTls = typeof record.useTls === "boolean" ? record.useTls : undefined;
-      return {
-        id: useTls === true ? `relay:wss:${relayEndpoint}` : `relay:${relayEndpoint}`,
-        type: "relay",
-        relayEndpoint,
-        ...(useTls !== undefined ? { useTls } : {}),
-        daemonPublicKeyB64,
-      };
-    } catch {
-      return null;
-    }
+    return normalizeStoredRelayConnection(record);
   }
 
   return null;
+}
+
+function normalizeStoredRelayConnection(record: Record<string, unknown>): HostConnection | null {
+  try {
+    const relayEndpoint = normalizeHostPort(
+      typeof record.relayEndpoint === "string" ? record.relayEndpoint : "",
+    );
+    const daemonPublicKeyB64 = (
+      typeof record.daemonPublicKeyB64 === "string" ? record.daemonPublicKeyB64 : ""
+    ).trim();
+    if (!daemonPublicKeyB64) return null;
+    const useTls = typeof record.useTls === "boolean" ? record.useTls : undefined;
+    const trustedKeyFingerprint =
+      typeof record.trustedKeyFingerprint === "string" && record.trustedKeyFingerprint.trim()
+        ? record.trustedKeyFingerprint.trim()
+        : undefined;
+    return {
+      id: useTls === true ? `relay:wss:${relayEndpoint}` : `relay:${relayEndpoint}`,
+      type: "relay",
+      relayEndpoint,
+      ...(useTls !== undefined ? { useTls } : {}),
+      daemonPublicKeyB64,
+      ...(trustedKeyFingerprint ? { trustedKeyFingerprint } : {}),
+    };
+  } catch {
+    return null;
+  }
 }
 
 export function normalizeStoredHostProfile(entry: unknown): HostProfile | null {

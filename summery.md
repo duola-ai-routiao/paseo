@@ -266,3 +266,23 @@
 ✅ 根因定位：不是按钮被删，而是**当前浏览器没保存 daemon 密码**——paseo-web daemon 有 PASEO_PASSWORD 保护，localStorage `@paseo:daemon-registry` 的 directTcp 连接里没有 password，daemon 日志连续刷 `Rejected WebSocket connection with invalid daemon password`。WS 连不上 → `useHostRuntimeClient` 返回 null → `GinitHubSection` 因 `if (!daemonClient) return null` 整段不渲染，所以 Ginit Hub 卡片 + Login with Feishu 按钮完全不显示，页面一直「Connecting」。
 ✅ 修复：在 localStorage `@paseo:daemon-registry` 的 directTcp 连接补上 password 字段（schema 本就支持），刷新后状态 Online，Ginit Hub 卡片正常出现（Device enrolled + My enrolled hosts 两台 online + Connect here + Default host address）。已用 Playwright 验证 hasGinit/hasFeishu/hasEnrolled/hasMyEnrolledHosts 全部为 true。
 📌 说明：飞书登录入口固定在 **Settings → Host → Overview → Ginit Hub**；根路径 `/` 会自动直连 daemon 并跳 `/open-project`（无任何项目时不显示登录按钮，属预期）。干净浏览器首次访问若未输密码会卡 Connecting——后续可加「密码缺失时统一引导输入」的兜底，避免无声息卡住。已记录 QW.md。
+
+---
+
+## 2026-07-28 拆掉「Web 宿主即设备」
+
+**用户需求**: paseo-web 不 enroll,改成匿名/只读 hub 会话列设备;设备列表只放真正跑 CLI 的 daemon。
+[旧架构] paseo-web ──(enroll 作为 Device)──> Hub
+[新架构] paseo-web ──(仅提供静态网页 & JS Bundle)──> 浏览器 ──(以 User Token 身份/只读)──> Hub(列出真正 Device)
+
+**最终总结**:
+
+1. **协议**(`packages/protocol/src/messages.ts`):`hub.login_ginit.request` 新增 optional `cacheOnly`(`COMPAT(hubLoginGinitCacheOnly)`);新增 `hub.account_token.request/response` 只读账号 token 移交。全部 optional,双向兼容。
+2. **Server**(`ginit-enroller.ts`/`daemon-session.ts`):新增 `cacheAccountToken()`(只写 ginitBaseUrl/ginitToken,绝不写设备身份字段,HubConnector 保持离线)与 `accountToken()`;`listDevices()` 放宽为只需缓存账号 token,未 enrolled 的 web 宿主也能代理设备列表,`isSelf` 仅在 deviceId 存在时为 true。
+3. **App**(`ginit-feishu-welcome.tsx`):飞书登录从「enroll 这台 host」改为 `cacheOnly` 缓存账号 token + User Token 直查 `GET /api/paseo/devices`(CORS 受限回退 daemon 代理),登录后渲染只读「My hosts」设备列表,不再 enroll。(`host-page.tsx`)未 enrolled 宿主显示「This web host is read-only — it is not enrolled as a device.」+ 设备列表;`(this host)` 标注仅 enrolled 宿主显示。
+4. **运行时配置**(并行合入):ginit 地址改为 env(`PASEO_GINIT_BASE_URL`/`PASEO_GINIT_HUB_WS_URL`)→ web-ui 注入 `window.__PASEO_GINIT_CONFIG__` → app `constants/ginit-config.ts` 读取,消除 bundle 硬编码 IP。
+5. **脚本**:删除 `scripts/ginit-enroll.mjs`、`ginit-enroll-direct.mjs`、`_enroll-bare-ip.mjs`。
+6. **部署**:8234 容器 `daemon.hub` 剥掉 `enabled/url/deviceId/token` 只留账号字段;本机无 buildx,改用「npm pack 预构建 tarball + 简版 Dockerfile + `DOCKER_BUILDKIT=0 --network=host`」组装新镜像并重建容器;重启后日志 `Hub not configured; connector idle until enrollment`。
+7. **验证**:typecheck/lint/43 项 hub 测试全绿;Playwright 确认 8234 Host 页显示 read-only 提示 + 真实设备列表(paseo-srv_oEgw online、paseo-srv_nvcX offline)且无「Device enrolled」;commits `f6e67cb30`、`0a3283ccc` 已推送 feat_ginit_connect。
+
+**遗留**:① B(150.5.173.43)paseo-web 8236 仍跑旧镜像旧 bundle,需 `docker save | ssh -o KexAlgorithms=ecdh-sha2-nistp256 docker load` 同步新镜像并同样剥离其 `daemon.hub` 设备身份;其旧 deviceId `2ecbaaa4-…` 还挂在 hub 上,hub 无 device 删除 API,只能等 TTL 或 DB 清理。② 修复过程中本机 node_modules 曾被容器内 npm 操作打成 root 所有(39685 个文件),用 `docker run --rm -v … chown -R 1000:1000` 修复;`napi-postinstall` 缺执行位需 `chmod +x`;npm 11 的 allow-scripts 机制会跳过 install 脚本导致部分包(如 @cloudflare/vite-plugin)解压不完整,需单独重装。

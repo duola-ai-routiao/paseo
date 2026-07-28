@@ -13,7 +13,9 @@ import {
   registryHasConnection,
   type HostConnection,
   type HostProfile,
+  type RelayHostConnection,
 } from "@/types/host-connection";
+import { daemonPublicKeyFingerprint } from "@/utils/daemon-fingerprint";
 import {
   buildDaemonWebSocketUrl,
   buildRelayWebSocketUrl,
@@ -1718,6 +1720,23 @@ export class HostRuntimeStore {
       throw new Error("daemonPublicKeyB64 is required");
     }
     const explicitUseTls = input.useTls !== undefined;
+
+    // TOFU: pin the daemon key fingerprint on first sight; afterwards a
+    // different key for the same host is a key-mismatch error, not a silent
+    // overwrite. Hub/device-list payloads are untrusted transport for keys.
+    const fingerprint = await daemonPublicKeyFingerprint(daemonPublicKeyB64);
+    const existing = this.hosts.find((host) => host.serverId === input.serverId);
+    const trusted = existing?.connections.find(
+      (conn): conn is RelayHostConnection =>
+        conn.type === "relay" && typeof conn.trustedKeyFingerprint === "string",
+    );
+    if (trusted && trusted.trustedKeyFingerprint !== fingerprint) {
+      throw new Error(
+        `Daemon key changed for ${input.serverId} (trusted ${trusted.trustedKeyFingerprint}, ` +
+          `got ${fingerprint}). Re-pair the host to trust the new key.`,
+      );
+    }
+
     return this.upsertHostConnection({
       serverId: input.serverId,
       label: input.label,
@@ -1727,6 +1746,7 @@ export class HostRuntimeStore {
         relayEndpoint,
         ...(explicitUseTls ? { useTls } : {}),
         daemonPublicKeyB64,
+        trustedKeyFingerprint: fingerprint,
       },
     });
   }

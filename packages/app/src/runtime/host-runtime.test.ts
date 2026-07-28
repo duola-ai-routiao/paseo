@@ -340,7 +340,7 @@ function makeHost(input?: Partial<HostProfile>): HostProfile {
     id: "relay:relay.paseo.sh:443",
     type: "relay",
     relayEndpoint: "relay.paseo.sh:443",
-    daemonPublicKeyB64: "pk_test",
+    daemonPublicKeyB64: "BgcGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgY=",
   };
 
   return {
@@ -358,7 +358,7 @@ function makeOffer(input?: Partial<ConnectionOffer>): ConnectionOffer {
   return {
     v: 2,
     serverId: input?.serverId ?? "srv_offer",
-    daemonPublicKeyB64: input?.daemonPublicKeyB64 ?? "pk_test_offer",
+    daemonPublicKeyB64: input?.daemonPublicKeyB64 ?? "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=",
     relay: {
       endpoint: input?.relay?.endpoint ?? "relay.paseo.sh:443",
       useTls: input?.relay?.useTls ?? false,
@@ -479,11 +479,11 @@ describe("HostRuntimeController", () => {
       type: "relay",
       relayEndpoint: "relay.paseo.sh:443",
       useTls: true,
-      daemonPublicKeyB64: "pk_old",
+      daemonPublicKeyB64: "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg=",
     };
     const newRelay: HostConnection = {
       ...oldRelay,
-      daemonPublicKeyB64: "pk_new",
+      daemonPublicKeyB64: "CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk=",
     };
     const createdClients: Array<{ client: FakeDaemonClient; connection: HostConnection }> = [];
     const controller = new HostRuntimeController({
@@ -1195,7 +1195,7 @@ describe("HostRuntimeController", () => {
           id: "relay:relay.paseo.sh:443",
           type: "relay",
           relayEndpoint: "relay.paseo.sh:443",
-          daemonPublicKeyB64: "pk_test",
+          daemonPublicKeyB64: "BgcGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgY=",
         },
       ],
     });
@@ -2927,7 +2927,7 @@ describe("HostRuntimeStore", () => {
         type: "relay",
         relayEndpoint: "relay.example.com:443",
         useTls: true,
-        daemonPublicKeyB64: "pk_test_offer",
+        daemonPublicKeyB64: "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=",
       },
     ]);
 
@@ -2949,7 +2949,7 @@ describe("HostRuntimeStore", () => {
     const oldPairingUrl = encodeOfferUrl({
       v: 2,
       serverId: "srv_offer",
-      daemonPublicKeyB64: "pk_test_offer",
+      daemonPublicKeyB64: "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=",
       relay: { endpoint: "relay.paseo.sh:443" },
     });
 
@@ -2962,7 +2962,7 @@ describe("HostRuntimeStore", () => {
         type: "relay",
         relayEndpoint: "relay.paseo.sh:443",
         useTls: true,
-        daemonPublicKeyB64: "pk_test_offer",
+        daemonPublicKeyB64: "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=",
       },
     ]);
 
@@ -2986,7 +2986,7 @@ describe("HostRuntimeStore", () => {
     await store.upsertRelayConnection({
       serverId: "srv_offer",
       relayEndpoint: "relay.paseo.sh:443",
-      daemonPublicKeyB64: "pk_test_offer",
+      daemonPublicKeyB64: "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=",
       label: "Custom name",
     });
 
