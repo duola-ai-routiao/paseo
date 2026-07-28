@@ -925,6 +925,39 @@ ginit Hub 必须始终按照当前飞书 user_id 过滤：
 
 ginit Hub 只做控制面，Paseo relay 负责数据面。不要把完整 Paseo session 明文转发逻辑塞进 ginit Hub。
 
+## 13.5 架构修正基线（2026-07-28）
+
+当前测试部署将多个独立角色放在同一台 testbed，但这些角色不能继续统称为“中继服务器”：
+
+| 角色                        | 当前测试入口        | 目标生产入口                        | 是否产生 Paseo device |
+| --------------------------- | ------------------- | ----------------------------------- | --------------------- |
+| ginit Hub HTTP 控制面       | `150.5.173.43:8090` | `https://hub.example.com`           | 否                    |
+| ginit Hub WebSocket         | `150.5.173.43:8235` | `wss://hub.example.com/ws/v1/paseo` | 否                    |
+| Paseo relay 数据面          | `150.5.173.43:8234` | `wss://relay.example.com/ws`        | 否                    |
+| Paseo Web client            | `150.5.173.43:8236` | `https://app.example.com`           | **否**                |
+| ginit CLI 同机 Paseo daemon | A 端本机            | daemon 主动出站连接 Hub/relay       | **是**                |
+
+必须遵守以下边界：
+
+1. Web client 只是 C 端，不得因为托管 Web UI 而 enroll 成一台空 daemon；设备列表只包含真正运行 agent/workspace 的 A 端 daemon。
+2. Hub HTTP、Hub WebSocket 和 relay 是三个协议角色。它们可以同机部署，但必须使用明确的域名和路径，不能依靠“8234/8235 是什么”的隐含约定。
+3. 公网控制面必须使用 HTTPS/WSS。当前裸 IP HTTP/WS 仅为临时测试入口，不是可上线架构。
+4. enrollment 只建立账号与设备身份绑定；relay endpoint、TLS 和在线状态属于运行时 metadata，应在签名 hello/metadata 更新中刷新。
+5. app 不得无条件接受 Hub 返回的新 daemon public key。首次连接应建立 TOFU 信任，后续 key 变化必须显式重新配对或确认轮换。
+6. 环境地址必须由运行期配置或服务端下发，不能硬编码在 App bundle，也不能由独立端口环境变量隐式推导。
+
+### 13.6 分阶段迁移顺序
+
+为避免同时破坏旧 daemon、旧 Hub 和现有测试部署，修正顺序固定为：
+
+1. 先统一 HTTPS/WSS endpoint 契约并提供旧配置兼容；
+2. 再把 relay metadata 从 enrollment 迁移到签名 hello/heartbeat 更新；
+3. 再增加 public key fingerprint、TOFU 和 key rotation；
+4. 再将 8236 迁移为 client-only Web，移除空 daemon device；
+5. 最后把 relay 公网入口统一到 WSS 443，并下线裸 IP 8234。
+
+每个协议新增字段都必须 optional，并用 `COMPAT(...)` 标记旧协议兼容代码及删除时间。
+
 ---
 
 ## 14. 当前遗留事项
