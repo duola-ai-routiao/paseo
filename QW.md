@@ -460,3 +460,25 @@ W: testbed 的 /opt/ginit/ginit 是旧版（无 paseo_hub.py/paseo_hub_gateway.p
 **验证**：目标测试 6 文件 64 通过；`npm run typecheck` 0 错；`npm run lint` 0 错；`npm run format:check` 全过。两仓库均已推送（paseo `ac9d988a9`，ginit `4ff8a35`）。
 
 **注意**：`packages/app/src/runtime/host-runtime.test.ts` 在 baseline 就因 `expo-constants` 的 `__DEV__` 未定义而整套导入失败（与本次无关，未修）；TOFU 行为由 daemon-fingerprint/host-connection 测试覆盖。
+
+---
+
+## 2026-07-29 - 8236 看不到本机 daemon（enroll 身份被拆 + verification_uri 指 staging）
+
+**Q(问题)**: 用户问 `150.5.173.4` 的 8236 页面能否飞书登录后看到本机启动的 ginit daemon。实测 8236 设备列表里本机 daemon 不在线。
+
+**W(解决方法)**:
+
+1. **地址澄清**：8236 在 `150.5.173.43`（用户笔误 .4，那台不可达），页面本身正常（200）。
+
+2. **根因①：本机 A daemon 的 enroll 身份在 07-28「拆 Web 宿主即设备」时被剥掉**。`daemon.hub` 只剩 `ginitBaseUrl/ginitToken`，`enabled/url/deviceId/token` 全删，HubConnector 永不连线，hub 上 deviceId `eab4adff` 一直 offline。**恢复**：`pht_` 明文 token 已丢（hub 只存 HMAC hash），遂在 hub 上用 `GINIT_TOKEN_SECRET` 重新 HMAC-SHA256 签发一个新 device token 更新 `paseo_devices.token_hash`（verify_device 用 token_prefix 定位 + compare_digest 校验，同一 device_id 改 hash 即可），再把完整 hub 配置（enabled/url/deviceId/token）写回 A 容器 config 重启 → `Sent hub.hello` → `Hub welcome; device online`，DB 转 online。relay metadata 由 hello 自动带下（cae8d51a9 已实现的 `relayMetadataProvider`），无需 PATCH。
+
+3. **根因②：hub `/auth/device/start` 返回的 `verification_uri` 用 `CFG base_url`（staging 域名）**，裸 IP 测试环境浏览器跳不过去（ERR_TIMED_OUT）。**修复**：ginit-server `server.py` 的 device start 改为——设了 `GINIT_PASEO_HUB_WS_PORT` 时 verification_uri 发 `http://150.5.173.43:8235/auth/feishu/start`（split 测试网关），否则维持原 base_url。已提交 ginit `40726c4` 推送 feat-paseo，并把同一份 server.py 同步 testbed 重启（md5 一致）。
+
+4. **飞书登录链路验证**：8236 页面登录= daemon 密码（WS 子协议 `paseo.bearer.<password>`，Playwright 把密码补进 localStorage directTcp 连接即连通）+ device flow（daemon 代理 device_start→8235 授权页→cli_aacb 应用→回调 8235）。已走到飞书授权页；设备列表经账号 token `/api/paseo/devices` 独立确认两台 ready。飞书手机 App「确认登录」属 CLI 场景需用户在手机上点，不在本次自动化范围。
+
+5. **踩坑（自伤）**：排查中误用 `docker exec … > config.json` 把 A 容器 config 截成 0 字节，且 docker cp 以 root 写入的 600 文件挡住 10001 daemon → `EACCES` crash-loop。**修复**：用 `docker run --rm -v <paseo-home>:/home/paseo alpine chown 10001:10001 …` 修属主/属组后恢复上线。教训：改容器内 bind-mount 的 10001 文件，要么 `docker cp`（保持容器内 uid）要么用特权容器 chown，别用会落 root 属主的重定向。
+
+6. **最终状态**：hub DB 两台 `paseo-srv_nvcX`(A)+`paseo-srv_oEgw`(B) 均 online + connection_ready + relay=150.5.173.43:8234；relay sessions=2；8236 Host 页设备列表两台 online，本机 daemon 可见。
+
+**结论**：8236 飞书登录后**能看到**本机 daemon（paseo-srv_nvcX，online）。两处修复：① 恢复 A 的 enroll 身份（重签 device token + 写回 hub 配置）② ginit-server verification_uri 支持 bare-IP（`GINIT_PASEO_HUB_WS_PORT`，commit `40726c4`）。

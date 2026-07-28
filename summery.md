@@ -298,3 +298,20 @@
 - 完成 5/6 项代码侧修正并推送（Paseo `ac9d988a9`、ginit `4ff8a35`）。① paseo-web 不再 enroll：`cacheOnly` 登录只缓存账号 token，设备列表只放真 daemon；② app 硬编码 150.5.173.43 删除，`PASEO_GINIT_BASE_URL`/`PASEO_GINIT_HUB_WS_URL` env 经 web-ui 注入运行期读取；③ relay metadata 改由签名 `hub.hello` 携带 `relay{endpoint,use_tls}`，gateway 原子刷新，PATCH 补丁路径标 COMPAT；④ relay 连接固定 TOFU 公钥指纹，key 变更即拒绝并要求 re-pair；⑤ relay 443/域名与飞书回调迁移是纯部署步骤已写文档 §13.9（代码已就绪：默认 `relay.paseo.sh:443`+TLS，hello 自动下发）。
 - 验证：目标测试 64 通过（config-ginit/web-ui/enroller/connector/daemon-fingerprint/host-connection + ginit gateway/hub 6），typecheck/lint/format 全 0。
 - 注意：`host-runtime.test.ts` baseline 就因 expo-constants `__DEV__` 未定义整套导入失败（与本次无关）；真实飞书授权+relay 443 WSS 端到端需在 testbed 按 §13.9 部署后验证。
+
+---
+
+## 2026-07-29 8236 飞书登录看到本机 daemon（恢复 enroll + bare-IP verification_uri）
+
+**用户需求 query**: `150.5.173.4` 的 8236 页面能否通过飞书登录看到本机启动的 ginit daemon？（或测试时临时不登录）
+
+**最终内容总结**:
+
+- 先澄清：8236 在 `150.5.173.43`（用户笔误 .4，该机不可达）；8236 页面正常（200，bundle index-f52c0b20）。
+- 根因①：本机 A daemon 的 enroll 身份在 07-28「拆 Web 宿主即设备」时被剥掉（`enabled/url/deviceId/token` 全删，只剩账号 token），hub 上 eab4adff 一直 offline。恢复方式：因 daemon 丢的是 `pht_` 明文 token（hub 只存 HMAC hash），重新签发 device token 更新 hub DB `token_hash`（HMAC-SHA256 with GINIT_TOKEN_SECRET），把 hub 配置（enabled/url/deviceId/token）写回 A 容器 config，重启 → `hub.hello`（带 relay metadata）→ `Hub welcome; device online`。
+- 根因②：hub `/auth/device/start` 的 `verification_uri` 用 `CFG base_url`（staging 域名），裸 IP 测试环境跳不到。给 ginit-server 打补丁：设 `GINIT_PASEO_HUB_WS_PORT=8235` 时 verification_uri 改发 `http://150.5.173.43:8235/auth/feishu/start`（已提交 ginit `40726c4` 并推送 feat-paseo，testbed 已同步同一份代码重启）。
+- 验证：hub DB 两台设备 `paseo-srv_nvcX`(A) + `paseo-srv_oEgw`(B) 均 online + `connection_ready` + `relay_endpoint=150.5.173.43:8234`；relay sessions=2；Playwright 打开 8236 Host 页，登录（daemon 密码）后 Ginit Hub 卡片正常，设备列表两台 online，本机 `paseo-srv_nvcX` 可见；用飞书账号 token 调 `/api/paseo/devices` 独立确认两台 ready。飞书 device flow 已走到授权页（app cli_aacb，回调 8235 已登记）。
+- 踩坑：写 A 容器 config 时误用 `docker exec` 空写把 config.json 截成 0 字节，且 docker cp 以 root 写入的 600 文件挡住 10001 daemon（EACCES crash-loop）；用 `docker run --rm -v … alpine chown 10001:10001` 修属主后恢复。
+- 结论：8236 飞书登录后**能看到**本机 daemon（paseo-srv_nvcX，online）。「临时不登录」方案存在（清 PASEO_PASSWORD 直连）但未采用——按推荐走飞书登录。
+
+**遗留**: ① device flow 最后一步飞书手机 App「确认登录」需用户在手机上点一下（CLI 场景无浏览器，不在 App 里确认不算完成授权）；点完后 paseo-web 会缓存新账号 token，长期有效。② A 容器 config 现同时含 enroll 身份 + 账号 token（enrolled host），与 B paseo-web 的 cacheOnly 只读宿主定位不同，属预期。
