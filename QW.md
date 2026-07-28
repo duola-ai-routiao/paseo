@@ -361,3 +361,19 @@ W: testbed 的 /opt/ginit/ginit 是旧版（无 paseo_hub.py/paseo_hub_gateway.p
 4. **hub.hello 404（split gateway 端口）**：`toHubWebSocketUrl` 只换 scheme 不换端口，HTTP API 在 8090、hub WS 网关在 8235 的部署下推导出错误 URL。给 paseo `ginit-enroller.ts` 加 `GINIT_PASEO_HUB_WS_PORT` 环境变量覆盖（含 vitest 用例，14/14 通过）；同时手动把已持久化的 `daemon.hub.url` 改成 `ws://150.5.173.43:8235/ws/v1/paseo` 并重启容器。随后 `Sent hub.hello` → `Hub welcome received; device online` → `hub.workspace.snapshot` 全通。
 
 5. **端到端验证（Playwright 真实飞书授权）**：device flow → GAIR 账号授权 → `hub.login_ginit` enroll 成功（deviceId `eab4adff...`）→ PATCH relay metadata（`150.5.173.43:8234`）→ staging DB `paseo_devices` 行 `status=online, relay_endpoint=150.5.173.43:8234, user_id=3`（飞书 union_id `on_efca0ea9...` 绑定）→ 经 relay E2EE 连接 RPC 确认 `enrolled: true`。A→B→C 全链路在 testbed 闭环。
+
+---
+
+## 2026-07-28 - http://150.5.173.43:8236 看不到飞书登录 + 登录后看不到本机服务
+
+**Q（问题）**：两个问题：① 打开 `http://150.5.173.43:8236/` 看不到「Login with Feishu」入口；② 飞书登录成功后看到的不是本机（B 的 paseo-web daemon）的服务/工作区。
+
+**W（解决方法）**：
+
+1. **飞书登录入口一直都在，只是位置不在根路径**。8236 启动时会自动 bootstrap 直连当前页面的 daemon（`window.location.host`），直连成功后按启动路由规则跳到 `/open-project`（docs/expo-router.md：无可恢复 workspace 时去全局 `/open-project`），所以「打开首页看不到登录」是已连上本机 daemon 的预期行为，不是 bug。飞书登录入口在 **Settings → Host → Overview → Ginit Hub** 卡片（设备未 enrolled 时显示「Login with Feishu」；已 enrolled 时显示「My enrolled hosts」设备列表）。
+
+2. **登录后「看到的不是本机服务」其实是「哪儿都看不到本机的服务」**。B 的 paseo-web daemon（srv_oEgw）是个空 daemon：它没有挂载 B 机的工作目录，workspace snapshot 本来就是空（hub DB 里 `snapshot.workspaces=[]`）。ginit CLI 的会话在 A 机上跑，只会出现在 A 的 daemon（srv_nvcX，本机 8234 容器）里——B 网页登录后看到的「本机」= B 的 paseo-web 空 daemon，属预期。要在 B 网页里看到 A 的服务，需要从「My enrolled hosts」里把 A 设备（paseo-srv_nvcX）Connect here 加进来。
+
+3. **顺手修了「Connect here 全部 disabled」的链路问题**：① B 的 paseo-web 设备 `2ecbaaa4` 在 hub 里 `relay_endpoint=NULL`（redeem 时报「device_id already enrolled」走保留凭证分支，老设备永远补不上 relay metadata）——用 `PATCH /api/paseo/devices/{id}` 补上 `150.5.173.43:8234` 后两台设备都 `connection_ready=True`；② UI 的「Connect here」按钮不是按设备 relay 连接，而是把「Default host address」当直连地址 `probeAndUpsertDirectConnection`，且默认 host 记忆存的是旧局域网地址 `192.168.3.2:8234`——在 B 网页把它改成 `150.5.173.43:8236` 后，本机那台显示 Added、A 那台按钮变为可点。
+
+4. **遗留**：SSH 到 testbed（22 端口）当前被对端拒绝（`Connection closed by 150.5.173.43 port 22`，所有 TCP 服务 8090/8234/8235/8236 正常），暂时无法重建 paseo-web 容器镜像。8236 服务的 bundle（index-69118a16）比本机 A 容器里的（index-f52c0b20）旧，仍含一处 `staging.ginit.opensii.ai` 硬编码（位于 host-page GinitHubSection handleLogin 的旧版）；当前已 enrolled 不触发该路径，但**重新登录时会打到不可达的 staging 域名**。SSH 恢复后需重建镜像 redeploy，或把 GINIT_BASE_URL 从硬编码改为可配置。

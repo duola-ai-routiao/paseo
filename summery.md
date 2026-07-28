@@ -216,3 +216,22 @@
 ✅ 修了三层问题:① 飞书 20029——回调改为 `http://150.5.173.43:8235/auth/feishu/callback` 并在应用后台登记;② 8235 端口 WS/HTTP 分流——用 websockets `process_request` 钩子在 WS 网关上直接服务 `/auth/feishu/*`(注意 websockets 13.1 是 legacy 签名 `(path, headers)`);③ enroll 后 hub 404——`GINIT_PASEO_HUB_WS_PORT` 环境变量解决 HTTP(8090)/WS(8235) 分离部署的 URL 推导(含单测 14/14)。
 ✅ 配置落盘:testbed `/etc/ginit.env` 用 `cli_aacb827247389bde`(GAIR 可用;文档已标注**上线生产必须换生产专用应用**,且 IM bot 必须独立应用);A 端 daemon `hub.url=ws://150.5.173.43:8235/ws/v1/paseo`、relay=`150.5.173.43:8234`;App 的 GINIT_BASE_URL=`http://150.5.173.43:8090`。paseo `4dac1426c` + ginit `a404a2a` 已推送。
 ⏳ 遗留:App 代码改动需重建 `paseo:local-ginit` 镜像才对 8234 web UI 生效;`GINIT_PASEO_HUB_WS_PORT=8235` 需写进 daemon 容器环境(compose)否则下次重新 enroll 还会推导出 8090;C 端(手机/网页)经飞书登录 staging 拉设备列表再连 relay 的完整浏览器验证未做。
+
+---
+
+## 2026-07-28 B(150.5.173.43) 部署 Paseo 网页 8236 + 飞书登录(裸 IP)
+
+**用户需求 query:** 把 Paseo 网页部署到 B 的 8236 端口,手机/网页端用飞书登录即可看到远程 ginit/paseo 主机;全程用裸 IP(测试阶段),不走 staging 域名,8234 保持不动。
+
+**内容总结:** 已完成并端到端验证。① 网页:把 A 机 paseo:local-ginit 镜像传到 B,起容器 paseo-web(8236:6767, PASEO_WEB_UI_ENABLED=true),config 指 app.baseUrl=http://150.5.173.43:8236、relay=150.5.173.43:8234。② 飞书登录:B 的 ginit-server SSO 应用切到 cli_aacb827247389bde(GAIR 有权限),回调用 8235 的 /auth/feishu/callback(注意不是用户以为的 8090)。用 Playwright 实测:打开 8236 → Login with Feishu → 选 GAIR/王少敬 → Authorize → 回调 completed,设备 paseo-srv_oEgw enroll 成功。③ 坑:app 一处硬编码 staging 导致 enroll 把 hub.url 写成 wss://staging(502 拒绝、设备 offline),手动改 paseo-web config 的 hub.url=ws://150.5.173.43:8235/ws/v1/paseo 后 device online。最终:A(srv_nvcX)+ B web(srv_oEgw)双双在 B hub online,网页飞书登录后设备列表两台均 online。SSO 应用与 IM bot 应用(cli_a969)独立、互不影响。待办:根治那处 staging 硬编码(enroll 会回写)、srv_oEgw 无 relay_endpoint(connection_ready=0)。已记 QW.md 并 push。
+
+---
+
+## 2026-07-28 8236 看不到飞书登录 + 登录后看不到本机服务
+
+**用户需求 query:** http://150.5.173.43:8236/ 看不到飞书登录，是不是有问题，查看 QW.md、summery.md 修复问题；追问「登录后应该看到本机的服务呀，为什么不是？」
+
+**最终内容总结:**
+✅ 排查结论：两个现象都不是服务故障。① 8236 打开即自动 bootstrap 直连当前页面的 daemon 并跳 `/open-project`，所以首页看不到登录是「已连上本机 daemon」的预期；飞书登录入口在 Settings→Host→Overview→Ginit Hub 卡片（未 enrolled 显示 Login with Feishu，已 enrolled 显示 My enrolled hosts）。② 「登录后看不到本机服务」是因为 B 的 paseo-web daemon（srv_oEgw）本身是空 daemon（无挂载工作目录，hub snapshot.workspaces 为空）；ginit CLI 会话在 A 机，只出现在 A 的 daemon（srv_nvcX）。
+✅ 顺手修复链路问题：B web 设备 2ecbaaa4 因「device_id already enrolled」永远补不上 relay metadata，用 PATCH /api/paseo/devices/{id} 补上 relay_endpoint=150.5.173.43:8234，两台设备均 connection_ready=True；UI 的 Default host address 从旧局域网 192.168.3.2:8234 改为 150.5.173.43:8236 后，本机 Added、A 设备 Connect here 可点击。
+⏳ 遗留：SSH 到 testbed 22 端口被拒（Connection closed），无法重建 paseo-web 镜像；8236 现 serv 的 bundle 比 A 容器旧，仍含 staging.ginit.opensii.ai 硬编码（重新登录会打到不可达 staging），SSH 恢复后需 redeploy 或把 GINIT_BASE_URL 改为可配置。已记录 QW.md。
