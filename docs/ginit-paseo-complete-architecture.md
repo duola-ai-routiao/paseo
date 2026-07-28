@@ -982,6 +982,27 @@ ginit Hub 只做控制面，Paseo relay 负责数据面。不要把完整 Paseo 
 
 设备列表现在只包含真正跑了 ginit 被控端服务（enroll 过）的 daemon；paseo-web 宿主不再出现在列表里。
 
+### 13.8 运行期 endpoint 配置、hello 中继元数据与 TOFU（2026-07-28 已完成代码侧）
+
+第 13.6 节第 1–3 步已在代码侧落地：
+
+1. **运行期 endpoint（阶段 1）**：daemon 新增 `PASEO_GINIT_BASE_URL` / `PASEO_GINIT_HUB_WS_URL` 环境变量（env → persisted `daemon.hub`），web-ui 把 `window.__PASEO_GINIT_CONFIG__` 注入 index.html，app 经 `getGinitBaseUrl()` 运行期读取，**删掉了 app 里的 `http://150.5.173.43:8090` 硬编码**。`GINIT_PASEO_HUB_WS_PORT` 端口推导降级为 `COMPAT(ginitHubWsPortEnv)`（2027-01-28 移除），`PASEO_GINIT_HUB_WS_URL` 优先级最高。
+2. **hello 中继元数据（阶段 2）**：daemon 的 `hub.hello` 现在携带 `relay {endpoint,use_tls}`（来自运行期 `relayPublicEndpoint`/`useTls`，`HubConnector.relayMetadataProvider`）；ginit gateway 在验签后的 hello 上原子刷新 `paseo_devices.relay_endpoint/relay_use_tls`（缺字段保留旧值，老 daemon 不发 relay 块不受影响）。enrollment 回归「只绑身份」，`PATCH /api/paseo/devices/{id}` 标记 `COMPAT(paseoDeviceRelayPatch)`（2027-01-28 移除）。
+3. **TOFU 公钥固定（阶段 3）**：`RelayHostConnection` 新增 `trustedKeyFingerprint`（NaCl hash 对原始 32 字节公钥的 16-hex 分组指纹）。`upsertRelayConnection` 首次插入时固定指纹；同一 host 后续出现不同指纹直接抛「Daemon key changed … Re-pair」，**不再静默覆盖被信任的 key**。Hub/offers 不再是无条件信任的公钥传输。
+
+对应提交：Paseo `cae8d51a9`（hello 中继元数据）、`e1b99e61f`（TOFU）；ginit `4ff8a35`（gateway 应用 hello relay metadata）。
+
+### 13.9 Relay 公网入口收敛（阶段 5 部署待定）
+
+代码侧已就位：daemon 默认 relay endpoint 为 `relay.paseo.sh:443` + `useTls`（`DEFAULT_RELAY_ENDPOINT`），hello 上报用 `relayPublicEndpoint`/`publicUseTls`。剩余是**纯部署动作**，不改代码：
+
+1. 给 B 的 `/opt/paseo-relay` 套 Caddy：`wss://relay.example.com/ws` → `127.0.0.1:8234`（TLS 在 Caddy 终止，Node relay 保持明文 WS 不变）。
+2. A 端 `daemon.relay` 的 `publicEndpoint` 指到 `relay.example.com:443` + `publicUseTls=true`，经阶段 2 的 hello 自动下发给所有 C 端。
+3. 验证 WSS 握手 + E2E 后，公网防火墙关掉 8234 裸端口（只留 443）；内网可保留作健康检查。
+4. Hub 控制面同理：`https://hub.example.com` → 8090（HTTP）与 8235（WS）都只在 loopback，飞书回调挪回 443 域名。
+
+当前生产 relay 仍用托管 `relay.paseo.sh:443`；自托管 relay 的 443/WSS 化在 testbed 验证后按上面步骤推进。
+
 剩余部署动作：把含新 bundle/server 的镜像同步到 B（8236 paseo-web）并同样剥掉其 `daemon.hub` 设备身份。
 
 ---
