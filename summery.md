@@ -192,3 +192,15 @@
 ✅ **探测结果**: `https://staging.ginit.opensii.ai/health` → `200 OK`（经 Caddy→8090);`https://staging.../ws/v1/paseo` → `426 Upgrade Required`（经 Caddy→8091,WS 端点活）。A 端 daemon.hub 当前已指向 `https://staging.ginit.opensii.ai` + `wss://staging.ginit.opensii.ai/ws/v1/paseo`（即 testbed 经 staging 域名的入口）。
 ⚠️ **用户需求的『裸 IP http://150.5.173.43:8090 + ws://150.5.173.43:8091』当前不可达** — ginit 绑 `127.0.0.1`(`GINIT_HOST=127.0.0.1` 在 `/etc/ginit.env`)，公网/裸 IP 直连超时；仅 staging 域名经 Caddy(443,TLS）可访问。要让 `http://150.5.173.43:8090` 直连，需把 `GINIT_HOST=0.0.0.0` 并 systemctl restart ginit；但 8090 裸 IP 公网暴露 + 无 TLS + 飞书 OAuth redirect URI 配置在 staging 域名，安全/凭据权衡需用户确认后再操作。
 ⏳ **遗留**: 等用户确认是否切 GINIT_HOST=0.0.0.0（裸 IP 直连）还是维持现状（staging 域名经 Caddy，推荐）。
+
+---
+
+## 2026-07-28 浏览器打开 http://150.5.173.43:8234/ 报 426
+
+**用户需求 query**: 打开页面 `http://150.5.173.43:8234/` 报错 `Failed to load resource: the server responded with a status of 426 (Upgrade Required)` 和 `navigator.getBattery is not a function`。
+
+**最终内容总结**:
+✅ **不是 bug，是协议预期行为**。150.5.173.43:8234 是 Paseo 数据面 relay（`/opt/paseo-relay/relay-server.mjs`,systemd `paseo-relay.service`），只接受 WebSocket 升级；参考实现 `packages/relay/src/cloudflare-adapter.ts:150-156` 对非 WS 的 HTTP GET 一律返回 `426 Expected WebSocket upgrade`。浏览器地址栏发起的是普通 GET，被拒是设计行为。
+✅ **relay 健康验证**：`curl http://150.5.173.43:8234/health` 返回 `200 {"status":"ok","sessions":1}`——relay 正常且已有 1 条 daemon control socket 在线。真正挂掉会返回 000 连接被拒，不是 426。
+✅ **`navigator.getBattery` 错误与 relay 无关**：来自 chrome-extension `hlofigcdgjlnalbkeeinfcjceabpamci`，是用户浏览器扩展调用了 Chrome 88+ 已删除的 `navigator.getBattery()` API，属插件 bug，忽略或卸载该扩展即可。
+📌 **使用建议**：relay 是数据面，不渲染 HTML，浏览器访问没有意义。健康检查用 `/health`；要 Web UI 应访问 daemon 端口（本机 Docker `paseo` 容器的 8234→6767，注意跟 staging relay 同名但不同机）。已记录到 QW.md。

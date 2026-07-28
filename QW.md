@@ -304,3 +304,24 @@ W: testbed 的 /opt/ginit/ginit 是旧版（无 paseo_hub.py/paseo_hub_gateway.p
    - **飞书授权未完成**：device flow 已发起（verification_uri 有效 15 分钟），用户选择暂不授权，故 daemon 在 staging 的最终 enroll + 设备列表 online/connection_ready 留待授权后自动完成（后台轮询脚本 `/tmp/paseo-relay/poll-and-enroll.mjs` 授权即自动 enroll + PATCH relay metadata）。
 
 **结论**：B 端中继两件套（staging hub + 自托管 relay:8234）已就绪；A 端 daemon 的 relay 数据面已切到 `150.5.173.43:8234` 且验证可连；A 端注册（enroll）目标已切到 staging，差最后一步飞书授权。授权后完整链路 = A 端 enroll 到 staging hub（绑定飞书账号）→ C 端同账号登录 staging 看到设备 → 经 `150.5.173.43:8234` relay 连到 A 端 daemon。
+
+---
+
+## 2026-07-28 - 浏览器打开 http://150.5.173.43:8234/ 报 426 Upgrade Required
+
+**Q（问题）**：用户在浏览器地址栏访问 `http://150.5.173.43:8234/`，DevTools Console 报错 `Failed to load resource: the server responded with a status of 426 (Upgrade Required)` 和 `TypeError: navigator.getBattery is not a function`（chrome-extension）。担心服务挂了。
+
+**W（解决方法）**：
+
+1. **426 是 Paseo relay 数据面的协议预期行为，不是 bug**。`150.5.173.43:8234` 上部署的是 Paseo 数据面 relay（`/opt/paseo-relay/relay-server.mjs`，systemd `paseo-relay.service`，0.0.0.0:8234，复刻 Cloudflare DO 的 v1/v2 线协议）。它**只接受 WebSocket 升级请求**，参考实现 `packages/relay/src/cloudflare-adapter.ts:150-156` 的 `requireWebSocketUpgrade`：非 `Upgrade: websocket` 的 HTTP GET 一律返回 `426 Expected WebSocket upgrade`。浏览器地址栏发起的是普通 GET（无 WS upgrade header），被拒是设计行为。
+
+2. **relay 不是 Web UI**。文档 `docs/ginit-paseo-complete-architecture.md` 明确：relay 是数据面（`手机/Web Paseo client ↔ relay ↔ daemon`），地址写作 `ws://150.5.173.43:8234`（注意是 ws:// 不是 http://）。它不渲染 HTML，浏览器访问没有意义。要看 Web UI 应该用 daemon 端口（本机 Docker `paseo` 容器 `0.0.0.0:8234→6767`，注意跟 staging relay 同名但不同机）。
+
+3. **验证 relay 实际健康**：`curl http://150.5.173.43:8234/health` 返回 `200 {"status":"ok","sessions":1}` —— relay 活着且已有 1 条 daemon control socket 在线。`sessions` 字段反映当前活跃 WebSocket 数，是最直接的健康指标。
+
+4. **`navigator.getBattery is not a function` 与 relay 完全无关**。报错栈来自 `chrome-extension://hlofigcdgjlnalbkeeinfcjceabpamci/js/contentscript.js` —— 是用户浏览器装的某个扩展调用已被 Chrome 移除的 `navigator.getBattery()` API（Chrome 88+ 已删除），属插件自身 bug。忽略或在 chrome://extensions 卸载该扩展即可。
+
+**健康检查速查**：
+- 浏览器看到 `426 Upgrade Required` → relay 端点活着，只是不接受普通 HTTP。
+- `curl http://150.5.173.43:8234/health` 应返回 `{"status":"ok","sessions":N}`，N≥1 表示至少 1 条 daemon control socket 在线。
+- 真正的服务挂掉会返回 `000`（连接被拒/超时），不是 426。
