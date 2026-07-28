@@ -1120,6 +1120,15 @@ export async function createPaseoDaemon(
           provider: agent.provider ?? null,
           status: agent.lifecycle,
         })),
+    // Relay metadata is runtime state: it travels with every signed hello so
+    // endpoint/TLS changes reach the hub without re-enrollment.
+    relayMetadataProvider: () =>
+      config.relayEnabled && config.relayPublicEndpoint
+        ? {
+            endpoint: config.relayPublicEndpoint,
+            useTls: config.relayPublicUseTls ?? config.relayUseTls ?? false,
+          }
+        : null,
   });
   const pushHubWorkspaceSnapshot = () => hubConnector.pushWorkspaceSnapshot();
   // Keep the hub's view of running services fresh as agents come and go.

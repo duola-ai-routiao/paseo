@@ -40,6 +40,12 @@ export interface HubConnectorOptions {
   reconnectMaxDelayMs?: number;
   /** Snapshot of running services sent after `hub.welcome`. */
   workspaceSnapshotProvider?: () => HubWorkspaceSnapshotEntry[];
+  /**
+   * Runtime relay metadata advertised to the hub. Called on every hello so
+   * endpoint/TLS changes propagate without re-enrollment. Return null/omit
+   * fields when relay is disabled — the hub keeps its last known values.
+   */
+  relayMetadataProvider?: () => { endpoint: string; useTls: boolean } | null;
 }
 
 const WS_CLOSE_NORMAL = 1000;
@@ -177,6 +183,9 @@ export class HubConnector {
       keypair.secretKeyB64,
       `2:${keypair.deviceId}:${daemonId}:${nonce}`,
     );
+    // Relay metadata rides the signed hello so the hub treats it as a
+    // daemon-authenticated runtime update rather than enrollment-time state.
+    const relay = this.options.relayMetadataProvider?.() ?? null;
     return {
       type: "hub.hello",
       protocolVersion: 2,
@@ -185,6 +194,7 @@ export class HubConnector {
       publicKey: keypair.publicKeyB64,
       nonce,
       signature,
+      ...(relay ? { relay: { endpoint: relay.endpoint, use_tls: relay.useTls } } : {}),
     };
   }
 

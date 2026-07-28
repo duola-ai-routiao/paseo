@@ -127,6 +127,27 @@ describe.skipIf(process.platform === "win32")("HubConnector", () => {
     expect(cryptoVerify(null, canonical, publicKey, Buffer.from(hello.signature, "base64"))).toBe(
       true,
     );
+    // No relayMetadataProvider configured: hello carries no relay block.
+    expect(hello.relay).toBeUndefined();
+    connector.stop();
+  });
+
+  test("includes signed relay metadata in hub.hello when a provider is configured", async () => {
+    const home = await mkdtemp(path.join(tmpdir(), "paseo-hub-connector-"));
+    await writeHubConfig(home);
+    const webSocketImpl = createFakeWebSocketImpl();
+    const connector = new HubConnector({
+      paseoHome: home,
+      logger: silentLogger,
+      webSocketImpl,
+      relayMetadataProvider: () => ({ endpoint: "relay.example.com:443", useTls: true }),
+    });
+    connector.start();
+
+    const socket = webSocketImpl.instances[0];
+    socket.emit("open");
+    const hello = JSON.parse(socket.sent[0]);
+    expect(hello.relay).toEqual({ endpoint: "relay.example.com:443", use_tls: true });
     connector.stop();
   });
 
