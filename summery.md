@@ -247,3 +247,22 @@
 ✅ 完成 paseo-web 重新部署：A 机 `docker save paseo:local-ginit | gzip`（约 155MB）scp 到 testbed → docker load → 重建 paseo-web 容器（8236:6767 + GINIT_PASEO_HUB_WS_PORT=8235）。新 bundle（index-f52c0b20）已无 staging.ginit.opensii.ai 硬编码（grep=0）。
 ✅ 验证：8236 /api/health 200，容器日志 hub.hello → Hub welcome; device online，hub 两台设备（srv_oEgw / srv_nvcX）均 online + connection_ready=True，relay 2 sessions。staging 硬编码隐患彻底消除，后续重新登录走裸 IP。
 已记录 QW.md。
+
+---
+
+## 2026-07-28 过滤 8236 网页的生产地址 staging.ginit.opensii.ai
+
+**用户需求 query:** 把 https://staging.ginit.opensii.ai(生产地址)从 8236 网页过滤掉,改成测试环境地址,配置在环境设置里。
+
+**内容总结:** 根因是 8236 网页用了旧 docker 镜像(11h前),其 app bundle 仍含 staging(commit cd6b5fd2a 的 resolveGinitBaseUrl fallback)。源码 commit 4dac1426c 已把 ginit base 统一改成 http://150.5.173.43:8090(ginit-server API;hub WS 在 8235)。修复是把 A 机最新镜像(1h前,bundle index-f52c0b 已无 staging)重新 docker load 到 B,paseo-web 随之更新。实测:B 容器 bundle grep staging=0/8090=2,8236 index.html 引用新 bundle,hub.url=ws://150.5.173.43:8235/ws/v1/paseo,两设备 srv_nvcX/srv_oEgw 均 online。踩坑:本机到 B 的 SSH 默认 KEX(sntrup761x25519)大文件频繁挂起(exit 124),改 -o KexAlgorithms=ecdh-sha2-nistp256 后小命令稳定;大文件仍靠 docker load 完成。注意:app 的 ginit base 目前是硬编码 150.5.173.43:8090,未做成 UI 环境设置项(建议后续做)。已记 QW.md 并 push。
+
+---
+
+## 2026-07-28 8236 页面没有飞书登录按钮（密码缺失导致 daemon 连不上）
+
+**用户需求 query:** paseo 需要登录到 http://150.5.173.43:8236，帮我修复问题，这里面为什么没有飞书登录按钮。
+
+**最终内容总结:**
+✅ 根因定位：不是按钮被删，而是**当前浏览器没保存 daemon 密码**——paseo-web daemon 有 PASEO_PASSWORD 保护，localStorage `@paseo:daemon-registry` 的 directTcp 连接里没有 password，daemon 日志连续刷 `Rejected WebSocket connection with invalid daemon password`。WS 连不上 → `useHostRuntimeClient` 返回 null → `GinitHubSection` 因 `if (!daemonClient) return null` 整段不渲染，所以 Ginit Hub 卡片 + Login with Feishu 按钮完全不显示，页面一直「Connecting」。
+✅ 修复：在 localStorage `@paseo:daemon-registry` 的 directTcp 连接补上 password 字段（schema 本就支持），刷新后状态 Online，Ginit Hub 卡片正常出现（Device enrolled + My enrolled hosts 两台 online + Connect here + Default host address）。已用 Playwright 验证 hasGinit/hasFeishu/hasEnrolled/hasMyEnrolledHosts 全部为 true。
+📌 说明：飞书登录入口固定在 **Settings → Host → Overview → Ginit Hub**；根路径 `/` 会自动直连 daemon 并跳 `/open-project`（无任何项目时不显示登录按钮，属预期）。干净浏览器首次访问若未输密码会卡 Connecting——后续可加「密码缺失时统一引导输入」的兜底，避免无声息卡住。已记录 QW.md。

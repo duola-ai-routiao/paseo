@@ -411,3 +411,16 @@ W: testbed 的 /opt/ginit/ginit 是旧版（无 paseo_hub.py/paseo_hub_gateway.p
    ```
    要永久生效，在 `~/.ssh/config` 的 `Host ginit-testbed` 下加一行 `KexAlgorithms ecdh-sha2-nistp256`。
 3. **顺带完成 paseo-web 重新部署**（修上一篇遗留的旧 bundle staging 硬编码）：`docker save paseo:local-ginit | gzip`（约 155MB）scp 到 testbed → `docker load` → 重建 `paseo-web` 容器（`-p 8236:6767 -e PASEO_WEB_UI_ENABLED=true -e PASEO_PASSWORD=... -e GINIT_PASEO_HUB_WS_PORT=8235 -v paseo-web-home:/home/paseo`）。新 bundle（index-f52c0b20）已无 `staging.ginit.opensii.ai` 硬编码（grep=0），容器日志 `hub.hello → Hub welcome; device online`，hub 两台设备 online + connection_ready。
+
+---
+
+## 2026-07-28 - 8236 页面看不到飞书登录按钮（根因：daemon 密码未保存到 host 连接）
+
+**Q（问题）**：打开 `http://150.5.173.43:8236` 后进 Settings → Host → Overview，**没有 Ginit Hub 卡片、没有「Login with Feishu」按钮**；页面顶部状态一直停在「Connecting」。
+
+**W（解决方法）**：
+
+1. **根因**：paseo-web daemon 的 `PASEO_PASSWORD` 保护生效，而**当前浏览器 host 注册表（localStorage `@paseo:daemon-registry`）里的 directTcp 连接没有保存密码**。daemon 日志连续刷 `Rejected WebSocket connection with invalid daemon password`（hasToken:false）。WS 连不上 → `useHostRuntimeClient(serverId)` 返回 null → `GinitHubSection` 第一行 `if (!daemonClient) return null` 直接不渲染，所以整段飞书登录区（Ginit Hub 卡片 + My enrolled hosts + Login with Feishu 按钮）完全不出现。
+2. **为什么之前能看到、后来看不到**：上一篇 QW 记录里用户/我们曾通过兜底 prompt 输过一次密码并连上；后来浏览器 localStorage 被清（或换了浏览器/隐身窗口），密码丢失，于是回到「Connecting」+ 无 Ginit Hub 的状态。这是**纯客户端本地状态问题**，B 的 daemon 本身、hub enroll、设备列表全部正常。
+3. **修复（当前浏览器立即生效）**：在 localStorage `@paseo:daemon-registry` 的 directTcp 连接里补上 `password` 字段（`DirectTcpHostConnectionSchema` 本就支持 `password?: string`），刷新页面 → 状态变 `Online` → Ginit Hub 卡片正常出现（Device enrolled + My enrolled hosts 两台 online + Connect here + Default host address）。
+4. **根治（让干净浏览器自动弹出密码输入框，而不是静默卡 Connecting）**：当前代码在「无密码 + probe 报 Password required」时应走 prompt/缓存逻辑，但该兜底只在 welcome 登录组件里，settings Host Overview 页没有。后续可在 `GinitHubSection` 或 `useHostRuntimeClient` 层加「密码缺失时引导输入」的统一兜底，避免用户在设置页看到无声息的 Connecting。
