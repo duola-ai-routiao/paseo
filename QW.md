@@ -442,3 +442,21 @@ W: testbed 的 /opt/ginit/ginit 是旧版（无 paseo_hub.py/paseo_hub_gateway.p
 2. **为什么之前能看到、后来看不到**：上一篇 QW 记录里用户/我们曾通过兜底 prompt 输过一次密码并连上；后来浏览器 localStorage 被清（或换了浏览器/隐身窗口），密码丢失，于是回到「Connecting」+ 无 Ginit Hub 的状态。这是**纯客户端本地状态问题**，B 的 daemon 本身、hub enroll、设备列表全部正常。
 3. **修复（当前浏览器立即生效）**：在 localStorage `@paseo:daemon-registry` 的 directTcp 连接里补上 `password` 字段（`DirectTcpHostConnectionSchema` 本就支持 `password?: string`），刷新页面 → 状态变 `Online` → Ginit Hub 卡片正常出现（Device enrolled + My enrolled hosts 两台 online + Connect here + Default host address）。
 4. **根治（让干净浏览器自动弹出密码输入框，而不是静默卡 Connecting）**：当前代码在「无密码 + probe 报 Password required」时应走 prompt/缓存逻辑，但该兜底只在 welcome 登录组件里，settings Host Overview 页没有。后续可在 `GinitHubSection` 或 `useHostRuntimeClient` 层加「密码缺失时引导输入」的统一兜底，避免用户在设置页看到无声息的 Connecting。
+
+---
+
+## 2026-07-29 - ginit+Paseo 六项架构修正（Web 宿主即设备 / 硬编码 / hello 元数据 / TOFU）
+
+**Q（问题）**：布局评审发现六类架构不合理：① paseo-web enroll 成空 daemon 混进设备列表；② app 硬编码 `http://150.5.173.43:8090`，hub WS 靠 `GINIT_PASEO_HUB_WS_PORT` 推导；③ relay metadata 在 enroll 时一次写死，老设备永远 `connection_ready=false` 只能靠 PATCH 补丁；④ Hub/offer 是公钥的不可信传输，key 被换无感知（MITM）；⑤ 8234 在 A 是 daemon UI、在 B 是 relay，端口语义混乱；⑥ 飞书 OAuth 回调寄生 WS 端口。
+
+**W（解决方法）**（全部代码侧完成并推送；relay 443 与 OAuth 回调迁移为纯部署步骤，已写进 docs/ginit-paseo-complete-architecture.md §13.9）：
+
+1. **Web 宿主即设备拆除**（Paseo `f6e67cb30` + `0a3283ccc`）：协议 `hub.login_ginit.request` 加 optional `cacheOnly`（COMPAT(hubLoginGinitCacheOnly)），新增 `hub.account_token.request/response`；`GinitHubEnroller.cacheAccountToken()` 只缓存账号 token 不写设备身份；Welcome/Host 页改只读设备列表，web 宿主不再 enroll。
+2. **运行期 endpoint**（含在前面提交）：daemon `PASEO_GINIT_BASE_URL`/`PASEO_GINIT_HUB_WS_URL` env → web-ui 注入 `window.__PASEO_GINIT_CONFIG__` → app `getGinitBaseUrl()` 运行期读取，硬编码删除；`GINIT_PASEO_HUB_WS_PORT` 降级为 COMPAT(ginitHubWsPortEnv)（2027-01-28 移除）。测试：config-ginit/web-ui/enroller 43 通过。
+3. **hello 中继元数据**（Paseo `cae8d51a9` + ginit `4ff8a35`）：daemon `hub.hello` 带 `relay{endpoint,use_tls}`（`relayMetadataProvider` 来自运行期配置）；ginit gateway 验签后原子 COALESCE 更新 `paseo_devices`，缺字段保留旧值。`PATCH /api/paseo/devices/{id}` 标记 COMPAT(paseoDeviceRelayPatch)。测试：Paseo connector 6 通过；ginit gateway+hub 6 通过。
+4. **TOFU 公钥固定**（Paseo `e1b99e61f`）：`RelayHostConnection.trustedKeyFingerprint`（nacl.hash 对原始 32 字节公钥，16-hex 分组）；`upsertRelayConnection` 首次固定、变更即抛「Daemon key changed … Re-pair」。测试：daemon-fingerprint + host-connection 15 通过。
+5. **Relay 443/域名与 OAuth 回调迁移**：纯部署步骤（Caddy `wss://relay.example.com/ws`→127.0.0.1:8234；A 端 `publicEndpoint` 指 443 经 hello 下发；Hub 443→8090/8235 loopback），已写 §13.9，不在代码改动范围。
+
+**验证**：目标测试 6 文件 64 通过；`npm run typecheck` 0 错；`npm run lint` 0 错；`npm run format:check` 全过。两仓库均已推送（paseo `ac9d988a9`，ginit `4ff8a35`）。
+
+**注意**：`packages/app/src/runtime/host-runtime.test.ts` 在 baseline 就因 `expo-constants` 的 `__DEV__` 未定义而整套导入失败（与本次无关，未修）；TOFU 行为由 daemon-fingerprint/host-connection 测试覆盖。

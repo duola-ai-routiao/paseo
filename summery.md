@@ -286,3 +286,15 @@
 7. **验证**:typecheck/lint/43 项 hub 测试全绿;Playwright 确认 8234 Host 页显示 read-only 提示 + 真实设备列表(paseo-srv_oEgw online、paseo-srv_nvcX offline)且无「Device enrolled」;commits `f6e67cb30`、`0a3283ccc` 已推送 feat_ginit_connect。
 
 **遗留**:① B(150.5.173.43)paseo-web 8236 仍跑旧镜像旧 bundle,需 `docker save | ssh -o KexAlgorithms=ecdh-sha2-nistp256 docker load` 同步新镜像并同样剥离其 `daemon.hub` 设备身份;其旧 deviceId `2ecbaaa4-…` 还挂在 hub 上,hub 无 device 删除 API,只能等 TTL 或 DB 清理。② 修复过程中本机 node_modules 曾被容器内 npm 操作打成 root 所有(39685 个文件),用 `docker run --rm -v … chown -R 1000:1000` 修复;`napi-postinstall` 缺执行位需 `chmod +x`;npm 11 的 allow-scripts 机制会跳过 install 脚本导致部分包(如 @cloudflare/vite-plugin)解压不完整,需单独重装。
+
+---
+
+## 2026-07-29 ginit+Paseo 六项架构修正
+
+**用户需求 query**: 对 A(ginit CLI 注册)→B(hub 存 daemon+飞书账号)→C(飞书登录发现设备)布局做评审后，按优先级逐项修正：拆 Web 宿主即设备、控制面 TLS、relay metadata 改 heartbeat、endpoint 运行期配置、public_key TOFU、relay 443 端口收敛。
+
+**最终内容总结**:
+
+- 完成 5/6 项代码侧修正并推送（Paseo `ac9d988a9`、ginit `4ff8a35`）。① paseo-web 不再 enroll：`cacheOnly` 登录只缓存账号 token，设备列表只放真 daemon；② app 硬编码 150.5.173.43 删除，`PASEO_GINIT_BASE_URL`/`PASEO_GINIT_HUB_WS_URL` env 经 web-ui 注入运行期读取；③ relay metadata 改由签名 `hub.hello` 携带 `relay{endpoint,use_tls}`，gateway 原子刷新，PATCH 补丁路径标 COMPAT；④ relay 连接固定 TOFU 公钥指纹，key 变更即拒绝并要求 re-pair；⑤ relay 443/域名与飞书回调迁移是纯部署步骤已写文档 §13.9（代码已就绪：默认 `relay.paseo.sh:443`+TLS，hello 自动下发）。
+- 验证：目标测试 64 通过（config-ginit/web-ui/enroller/connector/daemon-fingerprint/host-connection + ginit gateway/hub 6），typecheck/lint/format 全 0。
+- 注意：`host-runtime.test.ts` baseline 就因 expo-constants `__DEV__` 未定义整套导入失败（与本次无关）；真实飞书授权+relay 443 WSS 端到端需在 testbed 按 §13.9 部署后验证。
