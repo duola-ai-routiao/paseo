@@ -235,3 +235,15 @@
 ✅ 排查结论：两个现象都不是服务故障。① 8236 打开即自动 bootstrap 直连当前页面的 daemon 并跳 `/open-project`，所以首页看不到登录是「已连上本机 daemon」的预期；飞书登录入口在 Settings→Host→Overview→Ginit Hub 卡片（未 enrolled 显示 Login with Feishu，已 enrolled 显示 My enrolled hosts）。② 「登录后看不到本机服务」是因为 B 的 paseo-web daemon（srv_oEgw）本身是空 daemon（无挂载工作目录，hub snapshot.workspaces 为空）；ginit CLI 会话在 A 机，只出现在 A 的 daemon（srv_nvcX）。
 ✅ 顺手修复链路问题：B web 设备 2ecbaaa4 因「device_id already enrolled」永远补不上 relay metadata，用 PATCH /api/paseo/devices/{id} 补上 relay_endpoint=150.5.173.43:8234，两台设备均 connection_ready=True；UI 的 Default host address 从旧局域网 192.168.3.2:8234 改为 150.5.173.43:8236 后，本机 Added、A 设备 Connect here 可点击。
 ⏳ 遗留：SSH 到 testbed 22 端口被拒（Connection closed），无法重建 paseo-web 镜像；8236 现 serv 的 bundle 比 A 容器旧，仍含 staging.ginit.opensii.ai 硬编码（重新登录会打到不可达 staging），SSH 恢复后需 redeploy 或把 GINIT_BASE_URL 改为可配置。已记录 QW.md。
+
+---
+
+## 2026-07-28 SSH 修复（KEX 算法）+ paseo-web 重新部署到 testbed
+
+**用户需求 query:** ssh 可以用了（继续把 8236 旧 bundle 的 staging 硬编码修掉）
+
+**最终内容总结:**
+✅ SSH 根因定位：反复 Connection closed/timed out 但裸 TCP 能读到 banner——握手卡在后量子 KEX 算法 sntrup761x25519-sha512 的 KEX_ECDH_REPLY（大握手包丢包）。改用 `KexAlgorithms=ecdh-sha2-nistp256` 立即稳定连接。
+✅ 完成 paseo-web 重新部署：A 机 `docker save paseo:local-ginit | gzip`（约 155MB）scp 到 testbed → docker load → 重建 paseo-web 容器（8236:6767 + GINIT_PASEO_HUB_WS_PORT=8235）。新 bundle（index-f52c0b20）已无 staging.ginit.opensii.ai 硬编码（grep=0）。
+✅ 验证：8236 /api/health 200，容器日志 hub.hello → Hub welcome; device online，hub 两台设备（srv_oEgw / srv_nvcX）均 online + connection_ready=True，relay 2 sessions。staging 硬编码隐患彻底消除，后续重新登录走裸 IP。
+已记录 QW.md。

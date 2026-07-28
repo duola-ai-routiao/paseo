@@ -377,3 +377,19 @@ W: testbed 的 /opt/ginit/ginit 是旧版（无 paseo_hub.py/paseo_hub_gateway.p
 3. **顺手修了「Connect here 全部 disabled」的链路问题**：① B 的 paseo-web 设备 `2ecbaaa4` 在 hub 里 `relay_endpoint=NULL`（redeem 时报「device_id already enrolled」走保留凭证分支，老设备永远补不上 relay metadata）——用 `PATCH /api/paseo/devices/{id}` 补上 `150.5.173.43:8234` 后两台设备都 `connection_ready=True`；② UI 的「Connect here」按钮不是按设备 relay 连接，而是把「Default host address」当直连地址 `probeAndUpsertDirectConnection`，且默认 host 记忆存的是旧局域网地址 `192.168.3.2:8234`——在 B 网页把它改成 `150.5.173.43:8236` 后，本机那台显示 Added、A 那台按钮变为可点。
 
 4. **遗留**：SSH 到 testbed（22 端口）当前被对端拒绝（`Connection closed by 150.5.173.43 port 22`，所有 TCP 服务 8090/8234/8235/8236 正常），暂时无法重建 paseo-web 容器镜像。8236 服务的 bundle（index-69118a16）比本机 A 容器里的（index-f52c0b20）旧，仍含一处 `staging.ginit.opensii.ai` 硬编码（位于 host-page GinitHubSection handleLogin 的旧版）；当前已 enrolled 不触发该路径，但**重新登录时会打到不可达的 staging 域名**。SSH 恢复后需重建镜像 redeploy，或把 GINIT_BASE_URL 从硬编码改为可配置。
+
+---
+
+## 2026-07-28 - SSH 到 testbed 卡在 KEX（sntrup761）+ paseo-web 重新部署
+
+**Q（问题）**：SSH 到 `150.5.173.43` 反复 `Connection closed by 150.5.173.43 port 22` 或 `Connection timed out`，但裸 TCP 能连、能读到 SSH banner（`SSH-2.0-OpenSSH_9.6p1 Ubuntu-3ubuntu13.16`），8090/8234/8235/8236 各 TCP 服务全部正常。
+
+**W（解决方法）**：
+
+1. **根因是 SSH 密钥交换（KEX）算法在后量子 `sntrup761x25519-sha512@openssh.com` 上卡死**，不是 sshd 挂了，也不是 fail2ban。verbose 日志显示握手停在 `expecting SSH2_MSG_KEX_ECDH_REPLY`——服务器接受了该算法但回包在路上丢失/被中间设备吞掉（该算法握手包特别大，容易触发路径 MTU/分片问题）。同一时刻另一进程用 `KexAlgorithms=ecdh-sha2-nistp256` 能稳定连上，证实了这一点。
+2. **修复**：SSH 命令显式指定经典椭圆曲线算法即可稳定连接——
+   ```bash
+   ssh -o KexAlgorithms=ecdh-sha2-nistp256 root@150.5.173.43
+   ```
+   要永久生效，在 `~/.ssh/config` 的 `Host ginit-testbed` 下加一行 `KexAlgorithms ecdh-sha2-nistp256`。
+3. **顺带完成 paseo-web 重新部署**（修上一篇遗留的旧 bundle staging 硬编码）：`docker save paseo:local-ginit | gzip`（约 155MB）scp 到 testbed → `docker load` → 重建 `paseo-web` 容器（`-p 8236:6767 -e PASEO_WEB_UI_ENABLED=true -e PASEO_PASSWORD=... -e GINIT_PASEO_HUB_WS_PORT=8235 -v paseo-web-home:/home/paseo`）。新 bundle（index-f52c0b20）已无 `staging.ginit.opensii.ai` 硬编码（grep=0），容器日志 `hub.hello → Hub welcome; device online`，hub 两台设备 online + connection_ready。
