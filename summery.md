@@ -355,3 +355,17 @@
 - ginit ccd 自动注册（ginit `2fde6d6` 已推送 feat-paseo）：`cmdClaude` 入口调用 `ensurePaseoDaemonEnrolled()`（幂等、best-effort），新增 `paseo_auto_enroll.go` 解析 Paseo home + 检查是否已注册到当前 active 环境，不满足则自动 `cmdPaseoInstall` + `cmdPaseoAttachWith` 完成 install/attach。
 - 验证：`go test ./...` 全通过（Paseo 6 项测试全绿），`go vet` 无警告，新二进制 `ginit paseo status` 正常。
 - 效果：后续在任何机器跑 `ginit ccd`，都会自动确保本机 Paseo daemon 注册到当前 `ginit env use` 指向的环境（生产/testbed 自动跟随），远程 8236 页面（testbed）或生产 hub 都能看到该 daemon。
+
+## 2026-07-29 Ginit + Paseo 设计一致性修复
+
+**用户需求 query：** 仔细阅读 `/home/alan/paseo/ginit-paseo-llm-task-brief.md`，逐步校验实现与设计文档差异并修复；执行过程中每 20 轮必须重新阅读进度文档。
+
+**最终内容总结：**
+
+- 新增 `ginit-paseo-fix-progress.md` 作为执行检查点，记录用户要求、设计边界、当前轮次、已验证结果和遗留事项。
+- 修复设置页 Feishu 登录路径，始终传递 `cacheOnly: true`，防止未 enroll 的 Paseo Web 宿主因登录飞书而成为 Hub 设备。
+- 扩展 Hub 设备列表的 Server/Protocol 兼容字段：`publicKey`、`relayEndpoint`、`relayUseTls`、`connectionReady`；兼容 Ginit Hub 返回的 SQLite `relay_use_tls` 0/1 值，所有新增 wire 字段保持 optional。
+- 设置页设备连接不再使用用户手工填写的默认直连地址，而是基于 Hub 返回的 Relay metadata 调用 `upsertRelayConnection`，由已有 runtime 逻辑执行 Relay E2EE 和 TOFU 公钥固定；offline、未 ready 或缺少 metadata 的设备不可连接。
+- 已更新 `QW.md` 记录问题、解决方法、验证和遗留事项。欢迎页 Relay 连接改造和 endpoint fallback 收紧本轮未继续，避免扩大未验证修改范围。
+- 验证结果：`npm run typecheck` 通过；相关文件 lint 通过；`ginit-enroller.test.ts` 与 `messages.hub.test.ts` 共 36/36 通过；`git diff --check` 通过。
+- 遗留事项：需要后续独立小步为欢迎页补 Relay 连接和组件测试，并执行 Playwright、运行期 endpoint 和部署 bundle 验证。

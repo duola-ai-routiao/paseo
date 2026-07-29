@@ -434,6 +434,10 @@ interface HubListedDevice {
   status: string;
   lastSeenAt: string | null;
   isSelf: boolean;
+  publicKey?: string;
+  relayEndpoint?: string | null;
+  relayUseTls?: boolean | null;
+  connectionReady?: boolean;
 }
 
 const LAST_DEFAULT_HOST_STORAGE_KEY = "ginit.hub.lastDefaultHost";
@@ -461,7 +465,7 @@ async function saveLastDefaultHostListen(listen: string): Promise<void> {
 function GinitHubSection({ serverId }: { serverId: string }) {
   const daemonClient = useHostRuntimeClient(serverId);
   const hosts = useHosts();
-  const { probeAndUpsertDirectConnection } = useHostMutations();
+  const { upsertRelayConnection } = useHostMutations();
   const [enrollStatus, setEnrollStatus] = useState<{
     enrolled: boolean;
     deviceId: string | null;
@@ -541,7 +545,10 @@ function GinitHubSection({ serverId }: { serverId: string }) {
       }
       if (!token) throw new Error("Login timeout");
 
-      const enrollRes = await daemonClient.hubLoginGinit(ginitBaseUrl, token);
+      const enrollRes = await daemonClient.hubLoginGinit(ginitBaseUrl, token, {
+        // The web host is a read-only Hub client and must never enroll itself.
+        cacheOnly: true,
+      });
       if (!enrollRes.success) {
         throw new Error(enrollRes.error || "Enrollment failed");
       }
@@ -578,16 +585,28 @@ function GinitHubSection({ serverId }: { serverId: string }) {
 
   const handleApplyDevice = useCallback(
     async (device: HubListedDevice) => {
-      const trimmed = defaultHostListen.trim();
-      if (!trimmed) {
-        setErrorMessage("Set the default host address first (e.g. 192.168.3.2:8234)");
+      if (device.status !== "online" || device.connectionReady !== true) {
+        setErrorMessage(
+          "This daemon is not ready for Relay connection. Update the host and retry.",
+        );
+        return;
+      }
+      if (!device.relayEndpoint || !device.publicKey) {
+        setErrorMessage(
+          "This daemon is missing Relay connection metadata. Update the host and retry.",
+        );
         return;
       }
       setApplyingDeviceId(device.deviceId);
       setErrorMessage(null);
       try {
-        await probeAndUpsertDirectConnection({ endpoint: trimmed, label: device.name });
-        await saveLastDefaultHostListen(trimmed);
+        await upsertRelayConnection({
+          serverId: device.daemonId,
+          relayEndpoint: device.relayEndpoint,
+          useTls: device.relayUseTls ?? undefined,
+          daemonPublicKeyB64: device.publicKey,
+          label: device.name,
+        });
         setAppliedDeviceId(device.deviceId);
       } catch (error) {
         setErrorMessage(error instanceof Error ? error.message : String(error));
@@ -595,7 +614,7 @@ function GinitHubSection({ serverId }: { serverId: string }) {
         setApplyingDeviceId(null);
       }
     },
-    [defaultHostListen, probeAndUpsertDirectConnection],
+    [upsertRelayConnection],
   );
 
   if (!daemonClient) return null;
@@ -796,7 +815,12 @@ function GinitDeviceList(props: {
           <GinitDeviceRow
             key={device.deviceId}
             device={device}
-            canApply={defaultConnection !== null}
+            canApply={
+              device.status === "online" &&
+              device.connectionReady === true &&
+              !!device.relayEndpoint &&
+              !!device.publicKey
+            }
             isApplying={applyingDeviceId === device.deviceId}
             isApplied={
               appliedDeviceId === device.deviceId || (device.isSelf && defaultAlreadyAdded)

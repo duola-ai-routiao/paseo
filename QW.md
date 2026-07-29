@@ -1,4 +1,17 @@
-# QW.md — Bug 修复记录
+## 2026-07-29 - 设置页 Web 宿主身份边界与 Hub Relay 发现字段
+
+**Q（问题）**：设计要求 Paseo Web 只能缓存飞书用户 token，不能因 Settings 页登录而 enroll 成设备；设备连接也必须使用 Hub 发布的 Relay endpoint、daemon 公钥和 `connection_ready`，不能依赖用户手工输入的直连地址。此前设置页仍调用无 `cacheOnly` 的登录，并使用默认 host 地址执行 direct TCP probe；Paseo 端设备列表 schema 也没有透传 Ginit Hub 已提供的 Relay metadata。
+
+**W（解决方法）**：
+
+1. [packages/app/src/screens/settings/host-page.tsx](packages/app/src/screens/settings/host-page.tsx) 的设置页登录调用增加 `cacheOnly: true`，未 enroll 的 Web 宿主不会写入设备身份；并保留真正已 enroll daemon 的状态读取逻辑。
+2. [packages/server/src/server/hub/ginit-enroller.ts](packages/server/src/server/hub/ginit-enroller.ts) 读取 Hub 设备列表的 schema 和内部类型增加 optional `public_key`、`relay_endpoint`、`relay_use_tls`、`connection_ready`。其中 `relay_use_tls` 兼容 Hub SQLite 返回的布尔值和 0/1 数字。
+3. [packages/protocol/src/messages.ts](packages/protocol/src/messages.ts) 的 `HubListDeviceEntrySchema` 增加对应 optional 字段，保持旧 Hub/旧客户端协议兼容。
+4. 设置页设备连接改为使用 Hub metadata 调用 `upsertRelayConnection`，执行已有 TOFU 公钥指纹固定；offline、`connection_ready=false`、缺少 Relay endpoint 或公钥的设备不可连接，并提示更新主机。
+
+**验证**：`npm run typecheck` 通过；修改文件 lint 通过；`ginit-enroller.test.ts` 与 `messages.hub.test.ts` 共 36/36 通过；`git diff --check` 通过。欢迎页的 Relay 连接改造本轮未继续，避免在缺少稳定测试覆盖时扩大修改范围。
+
+**遗留**：欢迎页仍只展示设备列表，后续应在独立小步中复用相同的 `upsertRelayConnection` 逻辑并补组件测试；运行期 Ginit endpoint 缺失时的 fallback 也尚未收紧；本轮尚未完成 Playwright、部署 bundle 验证和提交推送。
 
 ## 2026-07-28 - 拆掉「Web 宿主即设备」：paseo-web 不 enroll，改匿名/只读 hub 会话
 

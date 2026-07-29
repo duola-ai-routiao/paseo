@@ -48,6 +48,11 @@ export interface HubGinitDeviceEntry {
   status: string;
   lastSeenAt: string | null;
   isSelf: boolean;
+  /** Optional for compatibility with older Hub deployments. */
+  publicKey?: string;
+  relayEndpoint?: string | null;
+  relayUseTls?: boolean | null;
+  connectionReady?: boolean;
 }
 
 export interface HubGinitEnrollerOptions {
@@ -91,6 +96,13 @@ const DeviceListItemSchema = z.object({
   name: z.string(),
   status: z.string(),
   last_seen_at: z.string().nullable().optional(),
+  public_key: z.string().optional(),
+  relay_endpoint: z.string().nullable().optional(),
+  relay_use_tls: z
+    .union([z.boolean(), z.literal(0), z.literal(1)])
+    .nullable()
+    .optional(),
+  connection_ready: z.boolean().optional(),
 });
 
 const DeviceListResultSchema = z.object({
@@ -326,14 +338,23 @@ export class GinitHubEnroller implements HubGinitEnroller {
     }
     const data = DeviceListResultSchema.parse(await res.json());
     return {
-      devices: data.items.map((item) => ({
-        deviceId: item.device_id,
-        daemonId: item.daemon_id,
-        name: item.name,
-        status: item.status,
-        lastSeenAt: item.last_seen_at ?? null,
-        isSelf: hub.deviceId !== undefined && item.device_id === hub.deviceId,
-      })),
+      devices: data.items.map((item) => {
+        const device: HubGinitDeviceEntry = {
+          deviceId: item.device_id,
+          daemonId: item.daemon_id,
+          name: item.name,
+          status: item.status,
+          lastSeenAt: item.last_seen_at ?? null,
+          isSelf: hub.deviceId !== undefined && item.device_id === hub.deviceId,
+        };
+        if (item.public_key) device.publicKey = item.public_key;
+        if (item.relay_endpoint !== undefined) device.relayEndpoint = item.relay_endpoint;
+        if (item.relay_use_tls !== undefined) {
+          device.relayUseTls = item.relay_use_tls === true || item.relay_use_tls === 1;
+        }
+        if (item.connection_ready !== undefined) device.connectionReady = item.connection_ready;
+        return device;
+      }),
     };
   }
 
