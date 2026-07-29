@@ -395,3 +395,17 @@
 - **ginit 自动注册缺陷修复**：`isPaseoDaemonEnrolled` 期望值推导不支持 split-port 部署（testbed 8235），导致重复 attach；`patchPaseoConfig` 无条件覆盖 listen（曾把 6769 改回 6767）。已修复并加测试。
 - **验证**：6769 `connection_ready=true`、8234 容器 `connection_ready=true`、Playwright 8236 Host 页两台设备均 online、`go test .`/`go vet .` 全通过、新 ginit 二进制已安装。
 - **遗留**：active env（default=prod）与 6769 daemon（testbed）不一致，需 `ginit env use testbed` 或设 `GINIT_PASEO_HUB_WS_PORT=8235` 才能让 `ginit ccd` 自动注册到 testbed；4 类元数据上报范围待用户确认安全边界。
+
+---
+
+## 2026-07-29 系统环境切换 testbed + ~/.paseo 手动 enrollment
+
+**用户需求 query**: 把 ginit 系统环境从 `https://ginit.opensii.ai` 改为 `150.5.173.43`（测试结束后改回），并解决 `ginit paseo install` 启动的 `~/.paseo` daemon 没有注册到远程服务器的问题。
+
+**最终内容总结**:
+
+- **系统环境切换**：新增 `testbed` profile（`base_url=http://150.5.173.43:8090`），`ginit env use testbed` 切换；备份原配置，测试结束后用 `ginit env use default` 改回。
+- **~/.paseo 未注册根因**：`ginit paseo install` 只启动 daemon 不自动 enroll；`ginit paseo attach` 期望的 `paseo daemon hub identity/attach` 命令在当前所有 paseo CLI 版本中不存在。
+- **手动 enrollment**：用 node 生成 Ed25519 keypair + 已有 ginit user token 调 testbed API 完成注册，手动配置 `daemon.hub` 和 `daemon.relay`。踩坑：deviceId 不一致导致 4403 invalid signature（重新生成并确保一致）、同一 daemon_id 重复 enrollment 产生多个设备（DELETE 清理）。
+- **验证**：`~/.paseo`（srv_MxTCvRAiJQ8k）在 testbed Hub 上 online + connection_ready=true + relay 连接建立；三台设备全部 online + connection_ready。
+- **遗留**：`ginit paseo attach` 依赖的 paseo CLI hub 命令缺失，需确认版本；测试结束后 `ginit env use default` 切回 prod。

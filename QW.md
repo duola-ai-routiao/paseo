@@ -619,3 +619,36 @@ W: testbed 的 /opt/ginit/ginit 是旧版（无 paseo_hub.py/paseo_hub_gateway.p
 
 - 当前 active env 是 `default=https://ginit.opensii.ai`，而 6769 daemon 注册在 testbed（150.5.173.43）——两者不一致。若要让 `ginit ccd` 自动注册到 testbed，需 `ginit env use <testbed>` 或设 `GINIT_PASEO_HUB_WS_PORT=8235`。
 - 4 类元数据（进程/会话/环境/MCP-Hooks）上报范围需用户确认安全边界后再扩展。
+
+---
+
+## 2026-07-29 - 系统环境切换 testbed + ~/.paseo 手动 enrollment
+
+**Q(问题)**: 用户要求把 ginit 系统环境从 `https://ginit.opensii.ai` 改为 `150.5.173.43`（测试结束后改回），并解决 `ginit paseo install` 启动的 `~/.paseo` daemon 没有注册到远程服务器的问题。
+
+**W(解决方法)**:
+
+1. **切换 ginit 系统环境到 testbed**：
+   - 新增 `testbed` profile（`base_url=http://150.5.173.43:8090`），`ginit env use testbed` 切换。
+   - 备份原配置到 `~/.config/ginit/config.json.bak-prod-*`，测试结束后用 `ginit env use default` 改回。
+
+2. **~/.paseo 未注册到远程的根因**：
+   - `ginit paseo install` 只启动 daemon 并写基础配置（`listen`/`relay.enabled`），**不自动 enroll**（enroll 需要 `ginit paseo attach` 或 `ginit ccd` 触发）。
+   - 更深层：`ginit paseo attach` 期望 paseo CLI 有 `daemon hub identity/attach` 命令，但当前所有 paseo CLI 版本（全局 0.2.3、源码 0.2.0-beta.4）都没有这些命令（只有 `hub connect/status/disconnect`）。
+
+3. **手动 enrollment（绕过 paseo CLI hub 命令缺失）**：
+   - 用 node 直接生成 Ed25519 keypair（与 daemon `device-keypair.ts` 逻辑一致），保存到 `~/.paseo/hub-device-keypair.json`。
+   - 用已有的 ginit user token（从 8234 容器配置）调 testbed API：`POST /api/paseo/enrollments` → `POST /api/paseo/enrollments/redeem`，完成 device 注册。
+   - 手动配置 `~/.paseo/config.json` 的 `daemon.hub`（url/deviceId/token/ginitBaseUrl/ginitToken）和 `daemon.relay`（endpoint/publicEndpoint）。
+   - **坑**：第一次 enrollment 时 `hub-device-keypair.json` 的 `deviceId` 与 `config.json` 里的 `deviceId` 不一致（node -e 每次生成新 keypair），导致 `hub.hello` 报 `4403 invalid device signature`。修复：重新生成 keypair 并确保两处 `deviceId` 一致，再重新 enrollment。
+   - **坑**：同一 `daemon_id` 重复 enrollment 会创建多个设备（旧的 offline + 新的 online）。修复：用 `DELETE /api/paseo/devices/{device_id}` 清理旧设备。
+
+4. **验证**：
+   - `~/.paseo`（srv_MxTCvRAiJQ8k）在 testbed Hub 上 `online` + `connection_ready=true` + `relay_endpoint=150.5.173.43:8234` ✅
+   - relay 日志确认 `srv_MxTCvRAiJQ8k` control 连接建立 ✅
+   - 三台设备（`~/.paseo` + 6769 + 8234 容器）全部 online + connection_ready ✅
+
+**遗留**：
+
+- `ginit paseo attach` 依赖的 `paseo daemon hub identity/attach` 命令在当前 paseo CLI 版本中不存在，需确认是 CLI 版本过旧还是 ginit 期望的 CLI 尚未发布。
+- 测试结束后用 `ginit env use default` 切回 prod。
