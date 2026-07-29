@@ -342,3 +342,16 @@
 - 部署：`npm run build:daemon-web-ui` 出新 bundle `index-19a390ba…`，原位替换 B 容器 `…/server/web-ui` 并重启 paseo-web，8236 index.html 引用新 bundle、ginit config 注入正常。
 - 验证：Playwright 清空 host 后 → 点 Feishu 登录 → 出现密码框 → 输密码 → 连上 daemon 并跳 open-project，密码写回 host 连接；裸报错消除，干净浏览器可自助登录。
 - 边界：host 在线后 welcome 自动跳 open-project（在线即非 welcome 场景），device flow 需未连接场景触发；`ws://localhost:6767` 是 app 默认探本机 daemon 的正常噪声。
+
+---
+
+## 2026-07-29 6769 daemon 切 testbed + ginit ccd 自动注册
+
+**用户需求 query**: 把 6769 daemon 切到 testbed hub 并完成 enroll，后续 ginit server 要自动完成注册。
+
+**最终内容总结**:
+
+- 手动切换 6769 daemon 到 testbed：用 testbed 飞书账号 token 走 enrollment → redeem 注册 device identity（`25de4b8b-…`/`srv_V_6a3jxLQ4Ip`），更新 config 指向 `ws://150.5.173.43:8235` + 新 token，重启后 `hub.hello` → `device online`，testbed DB 显示 `paseo-srv_V_6a` online。
+- ginit ccd 自动注册（ginit `2fde6d6` 已推送 feat-paseo）：`cmdClaude` 入口调用 `ensurePaseoDaemonEnrolled()`（幂等、best-effort），新增 `paseo_auto_enroll.go` 解析 Paseo home + 检查是否已注册到当前 active 环境，不满足则自动 `cmdPaseoInstall` + `cmdPaseoAttachWith` 完成 install/attach。
+- 验证：`go test ./...` 全通过（Paseo 6 项测试全绿），`go vet` 无警告，新二进制 `ginit paseo status` 正常。
+- 效果：后续在任何机器跑 `ginit ccd`，都会自动确保本机 Paseo daemon 注册到当前 `ginit env use` 指向的环境（生产/testbed 自动跟随），远程 8236 页面（testbed）或生产 hub 都能看到该 daemon。

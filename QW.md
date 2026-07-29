@@ -525,3 +525,28 @@ W: testbed 的 /opt/ginit/ginit 是旧版（无 paseo_hub.py/paseo_hub_gateway.p
 6. **已知边界**：密码登录成功后 welcome 因 host 已在线自动跳 open-project（host 在线即非 welcome 场景），飞书 device flow 需在未连接场景触发；密码兜底本身工作正常。console 另有 `ws://localhost:6767` 的连接尝试（app 默认 bootstrap 探本机 daemon，8236 场景无本机 daemon，console 报 refused 属正常噪声）。
 
 **结论**：8236 welcome 页干净浏览器登录时给出密码输入入口，输一次密码即连上并持久化；`Password required` 裸报错问题已修复（commit `bfd4ff772` 已推送，8236 bundle 已更新为 `index-19a390ba…`）。
+
+---
+
+## 2026-07-29 - 6769 daemon 切到 testbed hub + ginit ccd 自动注册
+
+**Q(问题)**: 本地 `ginit ccd` 启动的 daemon（6769）注册到了生产 hub（`ginit.opensii.ai`），远程 8236 页面的 testbed hub 看不到它；且后续每次 `ginit ccd` 都要手动 enroll，不符合自动化要求。
+
+**W(解决方法)**:
+
+1. **手动切换 6769 daemon 到 testbed**：
+   - 用 testbed 飞书账号 token 调 `POST /api/paseo/enrollments` 拿 ticket，再调 `POST /api/paseo/enrollments/redeem` 注册 6769 的 device identity（deviceId `25de4b8b-…`，daemonId `srv_V_6a3jxLQ4Ip`）。
+   - 更新 6769 的 `config.json`：`daemon.hub` 指向 `ws://150.5.173.43:8235/ws/v1/paseo` + 新 device token + `ginitBaseUrl=http://150.5.173.43:8090`。
+   - 用 `npm run cli -- daemon start --listen 127.0.0.1:6769` 重启，日志确认 `hub.hello` → `Hub welcome; device online`，testbed DB 显示 `paseo-srv_V_6a` online。
+
+2. **ginit ccd 自动注册（ginit `2fde6d6`）**：
+   - 在 `cmdClaude` 入口调用 `ensurePaseoDaemonEnrolled()`（幂等、best-effort，错误只打日志不阻塞 claude 启动）。
+   - 新增 `paseo_auto_enroll.go`：`resolvePaseoHome()` 解析 Paseo home（优先 dev checkout `.dev/paseo-home-deploy`，fallback `~/.paseo`）；`isPaseoDaemonEnrolled()` 检查 daemon 是否在跑且 hub URL 匹配当前 active ginit 环境；不满足则调 `cmdPaseoInstall` 安装/启动 + `cmdPaseoAttachWith` attach 到 ginit Hub。
+   - 复用现有 `cmdPaseoInstall`（幂等，保留现有配置）和 `cmdPaseoAttachWith`（走完整 enrollment → redeem → hub attach 流程）。
+
+3. **验证**：
+   - `go test ./...` 全通过（Paseo 相关 6 项测试全绿）。
+   - `go vet ./...` 无警告。
+   - 新二进制 `ginit paseo status` 正常返回设备列表。
+
+**结论**：6769 daemon 已切到 testbed hub 并 online；后续 `ginit ccd` 会自动确保本机 Paseo daemon 注册到当前 active ginit 环境（生产/testbed 跟随 `ginit env use`）。
