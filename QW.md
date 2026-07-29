@@ -652,3 +652,33 @@ W: testbed 的 /opt/ginit/ginit 是旧版（无 paseo_hub.py/paseo_hub_gateway.p
 
 - `ginit paseo attach` 依赖的 `paseo daemon hub identity/attach` 命令在当前 paseo CLI 版本中不存在，需确认是 CLI 版本过旧还是 ginit 期望的 CLI 尚未发布。
 - 测试结束后用 `ginit env use default` 切回 prod。
+
+## 2026-07-29 - `ginit ccd` 启动时大量报错（Daemon failed to start in background）
+
+**Q（问题）**：在仓库目录跑 `ginit ccd` 时打印 `Daemon failed to start in background (exit code 1)` 加一大段 JSON 日志，看起来像「一堆报错」。但机器上其实有 daemon 在跑。
+
+**W（解决方法）**：根因是双重的，需要两个环境变量同时设置：
+
+1. **第一根因：npm 全局 `@getpaseo/server@0.2.3` 不认识 `daemon.hub` 字段。**
+   - `ginit ccd` 启动前会调 `paseo daemon start` 确保 daemon 在线，默认用 PATH 里的 `paseo`，也就是 npm 全局 `@getpaseo/cli@0.2.3`，它内嵌 `@getpaseo/server@0.2.3` 的 `persisted-config.js` 没有 `hub` 这个 key（grep 0 命中）。
+   - 而 `~/.paseo/config.json` 由 ginit auto-enroll 写入，包含 `daemon.hub.{enabled,url,deviceId,token,ginitBaseUrl,ginitToken}`。
+   - `.strict()` schema 直接抛 `Unrecognized key: "hub"`，daemon exit 1。
+   - **解决**：`export GINIT_PASEO_PATH=/home/alan/paseo/packages/cli/bin/paseo`，让 ginit 用仓库里的 CLI（0.2.0-beta.4，支持 hub schema）。该变量由 [ginit-cli/paseo.go:47](ginit-cli/paseo.go#L47) 读取。
+
+2. **第二根因：`isPaseoDaemonEnrolled` 的 hub URL 比对失败。**
+   - ginit 在每次 `ccd` 启动前都会检查「deploy daemon 是否已 enrolled 到当前 ginit env」，逻辑在 [ginit-cli/paseo_auto_enroll.go:106](ginit-cli/paseo_auto_enroll.go#L106)：把 `~/.paseo/.dev/paseo-home-deploy/config.json` 里的 `daemon.hub.url` 和 `expectedPaseoHubWSURL(base_url)` 字符串比对。
+   - 当前活跃 env 是 testbed（REST `http://150.5.173.43:8090`），按公式推出来的 expected URL 是 `ws://150.5.173.43:8090/ws/v1/paseo`；但 config 里写的是 `ws://150.5.173.43:8235/ws/v1/paseo`（testbed hub WS 拆在 8235 端口）。
+   - 端口不匹配 → `isPaseoDaemonEnrolled=false` → 走 `cmdPaseoInstall` → 重复 `daemon start` → 端口被占，子进程 exit 1。
+   - **解决**：`export GINIT_PASEO_HUB_WS_PORT=8235`，让 `expectedPaseoHubWSURL` 走 split-port 分支（参见 [ginit-cli/paseo_auto_enroll.go:115-132](ginit-cli/paseo_auto_enroll.go#L115-L132)，`COMPAT(ginitHubWsPortEnv)`）。
+
+3. **写入 `~/.bashrc`**：
+   ```bash
+   export GINIT_PASEO_PATH=/home/alan/paseo/packages/cli/bin/paseo
+   export GINIT_PASEO_HUB_WS_PORT=8235
+   ```
+
+**「一堆报错」的真相**：用户看到的报错其实是 `tailFile(daemon.log, 30)` 把 daemon.log 末尾 30 行原样倒出。那些 JSON 行都是上一次 dev daemon 写入的 `ws_runtime_metrics` 心跳（level 30），不是错误。真正的错只有一行：`[Config] Invalid config ... Unrecognized key: "hub"`，埋在更早的日志深处。
+
+**验证**：设置两个变量后，新交互 shell 中 `ginit ccd --help` 不再打印 "Daemon failed to start"；`ginit paseo daemon status` 显示 `Local Daemon: running, Connected Daemon: reachable`；hub-connector 日志显示 `Hub welcome received; device online`。
+
+**遗留**：机器上同时存在 3 个 daemon（Docker 32485 占 6767、deploy 810708 占 6769、prod-like 606102 占 6768），后续可考虑收敛；`GINIT_PASEO_HUB_WS_PORT` 是 `COMPAT(ginitHubWsPortEnv)` 标记的临时变量，目标 2027-01-28 移除，等 testbed hub 与 REST 同端口后可以删掉。
