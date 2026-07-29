@@ -13,22 +13,23 @@
 - [ ] 欢迎页设备选择改为 Relay E2EE + TOFU
 - [ ] 收紧运行期 endpoint 缺失行为
 - [ ] Playwright 验证
-- [x] 更新 QW.md
+- [ ] 重新构建并核对部署镜像和 Web bundle
 - [ ] 更新 summery.md
 - [ ] git commit && git push
 
 ## 已验证
 
-- `npm run typecheck` 通过
-- 修改文件 lint 通过
+- 上一阶段 `npm run typecheck` 通过
+- 上一阶段修改文件 lint 通过
 - Hub/protocol 定向测试 36/36 通过
 - `git diff --check` 通过
+- 本轮欢迎页尝试曾触发重复插入和未稳定 lint，已完整恢复欢迎页与 endpoint 配置文件，未保留这些未验证改动
 
 ## 轮次
 
-当前轮次：31
-上次强制重读：第 20 轮前已重读
-下次强制重读：第 40 轮前
+当前轮次：40
+上次强制重读：第 40 轮前已重新阅读本文件
+下次强制重读：第 60 轮前，下一步操作前必须先重新阅读本文件
 
 ## 设计边界
 
@@ -43,18 +44,18 @@
 - `packages/server/src/server/hub/ginit-enroller.ts`
 - `packages/protocol/src/messages.ts`
 - `QW.md`
+- `summery.md`
 - `ginit-paseo-fix-progress.md`
 
 ## 变更记录
 
-- 1-3：建立记录并修复设置页 cacheOnly
-- 4-6：确认本地 Ginit Hub 已返回 Relay metadata
-- 7-11：Paseo server/protocol 透传 Relay metadata
-- 12-16：设置页用 `upsertRelayConnection`，增加状态门禁
-- 17-19：格式化、typecheck、lint、定向测试通过
-- 20：强制重读本文件
-- 21-23：兼容 SQLite relay_use_tls 的 0/1
-- 24：恢复一次误用大范围替换造成的设置页损坏
-- 25-29：重新应用小范围修改并通过验证
-- 30：恢复欢迎页到未修改状态，避免扩大未验证改动
-- 31：更新 QW，记录已完成修复和遗留事项
+- 1-31：完成首轮身份边界、设备 metadata、设置页 Relay/TOFU 修复并推送
+- 32-39：尝试在欢迎页接入 Relay metadata 和连接按钮，但因重复编辑风险未保留；恢复到上一稳定提交状态
+- 40：按用户要求重新阅读本文件，修正进度记录，下一步必须从小范围、可回滚修改开始
+
+## 待验证
+
+- 欢迎页 Relay 连接：应优先抽出独立纯函数/组件，避免大范围替换
+- endpoint fallback 策略：先增加测试，再修改调用点
+- Playwright 干净浏览器真实链路
+- 构建产物和部署镜像一致性
