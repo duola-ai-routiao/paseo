@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Text, View } from "react-native";
+import { Text, TextInput, View } from "react-native";
 import { LogIn, RefreshCw } from "lucide-react-native";
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import { Button } from "@/components/ui/button";
@@ -65,20 +65,45 @@ function findConnectedClient(): DaemonClient | null {
   return null;
 }
 
+function findServingHostClient(): DaemonClient | null {
+  if (typeof window === "undefined" || !window.location?.host) return null;
+  const store = getHostRuntimeStore();
+  for (const host of store.getHosts()) {
+    const hasServingConnection = host.connections.some(
+      (conn) => conn.type === "directTcp" && conn.endpoint === window.location.host,
+    );
+    if (!hasServingConnection) continue;
+    const snapshot = store.getSnapshot(host.serverId);
+    if (isHostRuntimeConnected(snapshot) && snapshot?.client) {
+      return snapshot.client;
+    }
+  }
+  return null;
+}
+
 async function resolveDaemonClient(
   probeAndUpsertDirectConnection: ReturnType<
     typeof useHostMutations
   >["probeAndUpsertDirectConnection"],
+  password?: string,
 ): Promise<DaemonClient> {
+  // The welcome screen must reach the daemon that served this page. A stale
+  // saved host entry may still hold a valid runtime client (the WS reconnects
+  // in the background), so prefer it over a blind re-probe with no password —
+  // otherwise a fresh sign-in attempt short-circuits on "Password required".
+  const serving = findServingHostClient();
+  if (serving) return serving;
   const connected = findConnectedClient();
   if (connected) return connected;
   // No host is connected yet (fresh browser profile hitting a deployed web
-  // UI). The welcome screen only makes sense when it can reach the daemon
-  // that served this page, so probe it directly.
+  // UI). Probe the daemon that served this page directly.
   if (typeof window === "undefined" || !window.location?.host) {
     throw new Error("No local Paseo host is connected yet — start the daemon and retry.");
   }
-  const probed = await probeAndUpsertDirectConnection({ endpoint: window.location.host });
+  const probed = await probeAndUpsertDirectConnection({
+    endpoint: window.location.host,
+    ...(password?.trim() ? { password: password.trim() } : {}),
+  });
   const client = getHostRuntimeStore().getSnapshot(probed.serverId)?.client;
   if (!client) {
     throw new Error("Connected to the host but no runtime client is available.");
@@ -171,36 +196,50 @@ export function GinitFeishuWelcome() {
   const [error, setError] = useState<string | null>(null);
   const [devices, setDevices] = useState<HubDeviceRow[] | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [password, setPassword] = useState("");
+  const [needsPassword, setNeedsPassword] = useState(false);
 
   const refreshDevices = useCallback(async (token: string, client: DaemonClient) => {
     const rows = await listDevicesAsUser(token, client);
     setDevices(rows);
   }, []);
 
-  const login = useCallback(async () => {
-    setState("loading");
-    setError(null);
-    try {
-      const client = await resolveDaemonClient(probeAndUpsertDirectConnection);
+  const login = useCallback(
+    async (passwordOverride?: string) => {
+      setState("loading");
+      setError(null);
+      setNeedsPassword(false);
+      try {
+        const client = await resolveDaemonClient(probeAndUpsertDirectConnection, passwordOverride);
 
-      // Device flow runs through the daemon so the browser never fetches the
-      // ginit server directly (the ginit server sends no CORS headers).
-      const start = await client.hubDeviceStart(ginitBaseUrl());
-      await openExternalUrl(start.verificationUri);
-      const token = await pollForGinitToken(client, start.deviceCode, start.expiresIn);
+        // Device flow runs through the daemon so the browser never fetches the
+        // ginit server directly (the ginit server sends no CORS headers).
+        const start = await client.hubDeviceStart(ginitBaseUrl());
+        await openExternalUrl(start.verificationUri);
+        const token = await pollForGinitToken(client, start.deviceCode, start.expiresIn);
 
-      // User-token login only — cache the account token on the serving daemon
-      // (cacheOnly: no device enrollment) so it can proxy account reads around
-      // the hub's missing CORS headers. The web host never becomes a device.
-      await client.hubLoginGinit(ginitBaseUrl(), token, { cacheOnly: true });
-      await storeToken(token);
-      await refreshDevices(token, client);
-      setState("ready");
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
-      setState("error");
-    }
-  }, [probeAndUpsertDirectConnection, refreshDevices]);
+        // User-token login only — cache the account token on the serving daemon
+        // (cacheOnly: no device enrollment) so it can proxy account reads around
+        // the hub's missing CORS headers. The web host never becomes a device.
+        await client.hubLoginGinit(ginitBaseUrl(), token, { cacheOnly: true });
+        await storeToken(token);
+        await refreshDevices(token, client);
+        setState("ready");
+      } catch (cause) {
+        const message = cause instanceof Error ? cause.message : String(cause);
+        if (/password required/i.test(message)) {
+          // The serving daemon is password-protected and this browser has no
+          // saved credential. Ask once and let the user retry with it.
+          setNeedsPassword(true);
+          setError("This daemon requires a password. Enter it below, then sign in again.");
+        } else {
+          setError(message);
+        }
+        setState("error");
+      }
+    },
+    [probeAndUpsertDirectConnection, refreshDevices],
+  );
 
   // A returning browser session reloads the device list with the stored user
   // token — no new Feishu round-trip, still no enrollment.
@@ -223,6 +262,10 @@ export function GinitFeishuWelcome() {
   const handleLoginPress = useCallback(() => {
     void login();
   }, [login]);
+
+  const handlePasswordLoginPress = useCallback(() => {
+    void login(password);
+  }, [login, password]);
 
   const handleRefreshPress = useCallback(() => {
     void (async () => {
@@ -276,6 +319,29 @@ export function GinitFeishuWelcome() {
             </Text>
           )}
         </View>
+      ) : needsPassword ? (
+        <View style={styles.passwordGroup} testID="welcome-password-group">
+          <TextInput
+            style={styles.passwordInput}
+            value={password}
+            onChangeText={setPassword}
+            placeholder="Daemon password"
+            secureTextEntry
+            autoFocus
+            onSubmitEditing={handlePasswordLoginPress}
+            testID="welcome-password-input"
+          />
+          <Button
+            variant="default"
+            size="lg"
+            leftIcon={LogIn}
+            onPress={handlePasswordLoginPress}
+            disabled={state === "loading" || password.trim().length === 0}
+            testID="welcome-password-login"
+          >
+            {state === "loading" ? "Connecting..." : "Sign in with password"}
+          </Button>
+        </View>
       ) : (
         <Button
           variant="default"
@@ -316,5 +382,15 @@ const styles = StyleSheet.create((theme) => ({
   },
   deviceName: { color: theme.colors.foreground, fontSize: theme.fontSize.sm },
   deviceMeta: { color: theme.colors.foregroundMuted, fontSize: theme.fontSize.xs },
+  passwordGroup: { gap: theme.spacing[2] },
+  passwordInput: {
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    borderRadius: theme.borderRadius.md,
+    paddingHorizontal: theme.spacing[3],
+    paddingVertical: theme.spacing[2],
+    color: theme.colors.foreground,
+    fontSize: theme.fontSize.sm,
+  },
   error: { color: theme.colors.destructive, fontSize: theme.fontSize.xs },
 }));
