@@ -8,6 +8,7 @@ import { ExternalLink, Settings } from "lucide-react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { HostProfile } from "@/types/host-connection";
 import { getHostRuntimeStore, isHostRuntimeConnected, useHosts } from "@/runtime/host-runtime";
+import { getInjectedGinitConfig } from "@/constants/ginit-config";
 import { Button } from "@/components/ui/button";
 import { resolveAppVersion } from "@/utils/app-version";
 import { formatVersionWithPrefix } from "@/desktop/updates/desktop-updates";
@@ -128,11 +129,12 @@ export function WelcomeScreen({ onHostAdded }: WelcomeScreenProps) {
   const appVersionText = formatVersionWithPrefix(appVersion);
   const hosts = useHosts();
   const anyOnlineServerId = useAnyHostOnline(hosts.map((h) => h.serverId));
+  const hasGinitRuntimeConfig = getInjectedGinitConfig()?.baseUrl !== undefined;
 
   useEffect(() => {
-    if (!anyOnlineServerId) return;
+    if (!anyOnlineServerId || hasGinitRuntimeConfig) return;
     router.replace(buildOpenProjectRoute());
-  }, [anyOnlineServerId, router]);
+  }, [anyOnlineServerId, hasGinitRuntimeConfig, router]);
 
   const handleOpenPaseoSite = useCallback(() => {
     void openExternalUrl("https://paseo.sh");

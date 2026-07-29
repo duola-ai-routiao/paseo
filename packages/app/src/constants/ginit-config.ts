@@ -9,12 +9,7 @@ export interface GinitRuntimeConfig {
   hubWsUrl?: string;
 }
 
-/**
- * Reads the runtime ginit hub endpoints injected by the serving daemon into
- * index.html (`window.__PASEO_GINIT_CONFIG__`). Returns null when the page was
- * not served by a daemon (Metro dev) or no ginit endpoints are configured —
- * callers should then fall back to `getDefaultGinitBaseUrl`.
- */
+/** Reads runtime Ginit endpoints injected by the serving daemon. */
 export function getInjectedGinitConfig(): GinitRuntimeConfig | null {
   if (!isWeb) return null;
   const raw = (globalThis as Record<string, unknown>)[GINIT_CONFIG_GLOBAL_KEY];
@@ -29,11 +24,7 @@ export function getInjectedGinitConfig(): GinitRuntimeConfig | null {
   };
 }
 
-/**
- * Last-resort default used when the page was not served by a configured
- * daemon (e.g. Expo Go / Metro dev). Points at the public staging hub so dev
- * builds still reach a real environment instead of a stale testbed IP.
- */
+/** Metro development fallback only. */
 const DEFAULT_GINIT_BASE_URL = "https://ginit.opensii.ai";
 
 export function getGinitBaseUrl(): string {

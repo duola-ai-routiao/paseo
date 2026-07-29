@@ -369,3 +369,15 @@
 - 已更新 `QW.md` 记录问题、解决方法、验证和遗留事项。欢迎页 Relay 连接改造和 endpoint fallback 收紧本轮未继续，避免扩大未验证修改范围。
 - 验证结果：`npm run typecheck` 通过；相关文件 lint 通过；`ginit-enroller.test.ts` 与 `messages.hub.test.ts` 共 36/36 通过；`git diff --check` 通过。
 - 遗留事项：需要后续独立小步为欢迎页补 Relay 连接和组件测试，并执行 Playwright、运行期 endpoint 和部署 bundle 验证。
+
+## 2026-07-29 8236 Web 免密码飞书登录
+
+**用户需求 query：** 阅读 `ginit-paseo-llm-task-brief.md`，修复 `http://150.5.173.43:8236/welcome` 的 Login with Feishu，使其跳转飞书授权页面，不要求手动输入 Paseo daemon 密码。
+
+**最终内容总结：**
+
+- 复现确认根因是远程 `paseo-web` 容器仍注入 `PASEO_PASSWORD`，不是飞书 OAuth 本身失败；已重建 8236 容器并移除该环境变量，保留 Web UI、Hub WS 端口和持久化卷配置。
+- Welcome 页增加运行期 Ginit 配置判断：部署 Web 页面显式访问 `/welcome` 时不再因为宿主在线自动跳到 `/open-project`，因此 Login with Feishu 入口持续可见；Metro 页面保留原有自动恢复行为。
+- 欢迎页设备列表补充 Relay metadata，抽出设备行组件，并对 online、`connection_ready` 且 metadata 完整的设备启用 Relay E2EE + TOFU Connect。
+- 验证结果：8236 `/api/health` 返回 200，容器日志为 `authRequired=false`；清空浏览器存储后 `/welcome` 显示 Login with Feishu，点击后不再出现密码输入框，daemon 日志确认无密码 WebSocket 连接成功；`build:daemon-web-ui`、`typecheck`、定向 lint、`git diff --check` 通过。
+- 遗留：飞书授权需要用户在飞书客户端确认；远程容器本次通过 `docker run` 手工重建，后续应把无密码环境持久化到正式部署脚本/compose，避免重新部署时恢复密码。

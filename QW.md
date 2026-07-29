@@ -563,3 +563,20 @@ W: testbed 的 /opt/ginit/ginit 是旧版（无 paseo_hub.py/paseo_hub_gateway.p
    - 新二进制 `ginit paseo status` 正常返回设备列表。
 
 **结论**：6769 daemon 已切到 testbed hub 并 online；后续 `ginit ccd` 会自动确保本机 Paseo daemon 注册到当前 active ginit 环境（生产/testbed 跟随 `ginit env use`）。
+
+## 2026-07-29 - 8236 Web 宿主改为免密码，Welcome 直接进入飞书授权
+
+**Q（问题）**：用户打开 `http://150.5.173.43:8236/welcome`，点击 Login with Feishu 时被 8236 的 paseo-web daemon 密码保护拦截，页面显示 Daemon password，无法直接跳转飞书授权。部署容器实际仍注入了 `PASEO_PASSWORD`，与测试环境“飞书登录作为用户认证、Web 宿主不 enroll”的设计不一致；同时 Welcome 页在已有在线宿主时会自动跳到 `/open-project`，显式访问 `/welcome` 看不到登录入口。
+
+**W（解决方法）**：
+
+1. **部署层移除密码**：重建远程 `paseo-web` 容器时不再传入 `PASEO_PASSWORD`，保留 `PASEO_WEB_UI_ENABLED=true`、`GINIT_PASEO_HUB_WS_PORT=8235`、`paseo-web-home` 持久化卷和 `paseo:local-ginit` 镜像。重启日志确认 `authRequired=false`、WebSocket 直接连接成功，并出现 `Hub not configured; connector idle until enrollment`，Web 宿主不会恢复成设备。
+2. **Welcome 入口保持可达**：`welcome-screen.tsx` 检测运行期注入的 Ginit base URL；被 daemon 托管的 Web 页面即使宿主已在线，也不自动从显式 `/welcome` 跳离，用户可以点击 Login with Feishu。Metro/无 Ginit 配置页面保留原有在线宿主自动恢复工作区行为。
+3. **Welcome 设备连接**：保留 Hub 返回的 `public_key`、`relay_endpoint`、`relay_use_tls`、`connection_ready`，抽出 `WelcomeGinitDeviceRow`；只有 online、connection_ready 且 metadata 完整的设备才启用 Connect，并复用已有 Relay E2EE + TOFU `upsertRelayConnection`。
+4. **配置回退**：未改变 daemon 外部部署的通用密码能力，也未全局绕过认证；真正执行 daemon 仍可按需设置密码。`ginit-config.ts` 只保留 Metro 的开发 fallback。
+
+**验证**：远程 `GET http://150.5.173.43:8236/api/health` 返回 200；容器启动日志确认 `authRequired=false`；清空浏览器 localStorage 后打开 `/welcome` 可见 Login with Feishu，点击后不再显示密码框，并成功打开飞书授权标签页，daemon 日志确认客户端 WebSocket 无密码连接成功。源码 `npm run build:daemon-web-ui`、`npm run typecheck`、欢迎页定向 lint、`git diff --check` 均通过。
+
+**遗留**：飞书授权页需要真实用户在飞书客户端确认，当前 Playwright 只验证到授权页打开；远程容器是手工 `docker run` 重建，后续应将同样的无密码环境写入正式部署 compose/脚本，避免下一次部署重新注入密码。
+
+---
