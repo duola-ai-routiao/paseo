@@ -11,6 +11,15 @@ The Hub never discovers or acquires the daemon through Paseo's relay. The relay 
 encrypted path for normal Paseo clients and has no role in Hub enrollment, authentication, dispatch,
 or reconnects.
 
+The daemon has two independent public keys. The Hub `publicKey` is an Ed25519 SPKI identity used to
+authenticate the Hub connection and sign discovery metadata. The Relay `relayPublicKey` is a raw
+32-byte NaCl/Curve25519 key used for E2E key agreement and client TOFU. They are not interchangeable.
+When Relay discovery is enabled, the daemon signs the canonical tuple
+`["relay-v1", endpoint, useTls, relayPublicKey]` with its Hub identity. A Hub must publish the tuple
+only after verifying that signature, and marks a device connection-ready only when both the endpoint
+and Relay public key are present. Missing metadata from an old daemon is tolerated; an incomplete or
+unsigned Relay tuple must never overwrite stored discovery metadata.
+
 The daemon persists a relationship ID and private connection credential before enrollment. The
 relationship is independent of its current transport, so a future transport can replace the direct
 WebSocket without pairing again. The current foundation supports one Hub relationship per daemon.

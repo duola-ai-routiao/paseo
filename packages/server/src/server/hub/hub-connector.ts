@@ -45,7 +45,11 @@ export interface HubConnectorOptions {
    * endpoint/TLS changes propagate without re-enrollment. Return null/omit
    * fields when relay is disabled — the hub keeps its last known values.
    */
-  relayMetadataProvider?: () => { endpoint: string; useTls: boolean } | null;
+  relayMetadataProvider?: () => {
+    endpoint: string;
+    useTls: boolean;
+    publicKey: string;
+  } | null;
 }
 
 const WS_CLOSE_NORMAL = 1000;
@@ -186,6 +190,12 @@ export class HubConnector {
     // Relay metadata rides the signed hello so the hub treats it as a
     // daemon-authenticated runtime update rather than enrollment-time state.
     const relay = this.options.relayMetadataProvider?.() ?? null;
+    const relaySignature = relay
+      ? signHubHello(
+          keypair.secretKeyB64,
+          JSON.stringify(["relay-v1", relay.endpoint, relay.useTls, relay.publicKey]),
+        )
+      : null;
     return {
       type: "hub.hello",
       protocolVersion: 2,
@@ -194,7 +204,16 @@ export class HubConnector {
       publicKey: keypair.publicKeyB64,
       nonce,
       signature,
-      ...(relay ? { relay: { endpoint: relay.endpoint, use_tls: relay.useTls } } : {}),
+      ...(relay
+        ? {
+            relay: {
+              endpoint: relay.endpoint,
+              use_tls: relay.useTls,
+              public_key: relay.publicKey,
+              signature: relaySignature,
+            },
+          }
+        : {}),
     };
   }
 

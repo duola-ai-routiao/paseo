@@ -435,6 +435,7 @@ interface HubListedDevice {
   lastSeenAt: string | null;
   isSelf: boolean;
   publicKey?: string;
+  relayPublicKey?: string;
   relayEndpoint?: string | null;
   relayUseTls?: boolean | null;
   connectionReady?: boolean;
@@ -591,7 +592,7 @@ function GinitHubSection({ serverId }: { serverId: string }) {
         );
         return;
       }
-      if (!device.relayEndpoint || !device.publicKey) {
+      if (!device.relayEndpoint || !device.relayPublicKey) {
         setErrorMessage(
           "This daemon is missing Relay connection metadata. Update the host and retry.",
         );
@@ -604,7 +605,7 @@ function GinitHubSection({ serverId }: { serverId: string }) {
           serverId: device.daemonId,
           relayEndpoint: device.relayEndpoint,
           useTls: device.relayUseTls ?? undefined,
-          daemonPublicKeyB64: device.publicKey,
+          daemonPublicKeyB64: device.relayPublicKey,
           label: device.name,
         });
         setAppliedDeviceId(device.deviceId);
@@ -819,7 +820,7 @@ function GinitDeviceList(props: {
               device.status === "online" &&
               device.connectionReady === true &&
               !!device.relayEndpoint &&
-              !!device.publicKey
+              !!device.relayPublicKey
             }
             isApplying={applyingDeviceId === device.deviceId}
             isApplied={

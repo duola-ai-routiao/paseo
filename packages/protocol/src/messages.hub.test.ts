@@ -53,6 +53,34 @@ const PreviousHubAgentCreateRequestSchema = z.object({
 });
 
 describe("Hub session protocol", () => {
+  test("accepts additive relay discovery key fields", () => {
+    const message = {
+      type: "hub.list_devices.response" as const,
+      payload: {
+        requestId: "request-devices",
+        success: true,
+        devices: [
+          {
+            deviceId: "device-1",
+            daemonId: "daemon-1",
+            name: "paseo-host",
+            status: "online",
+            lastSeenAt: null,
+            isSelf: false,
+            publicKey: "hub-signing-key",
+            relayPublicKey: "relay-e2ee-key",
+            relayEndpoint: "relay.example.com:443",
+            relayUseTls: true,
+            connectionReady: true,
+          },
+        ],
+        error: null,
+      },
+    };
+
+    expect(SessionOutboundMessageSchema.parse(message)).toEqual(message);
+  });
+
   test("accepts the Hub execution create request", () => {
     const message = {
       type: "hub.execution.agent.create.request",

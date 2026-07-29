@@ -3839,6 +3839,8 @@ export const HubListDeviceEntrySchema = z.object({
   isSelf: z.boolean(),
   /** Optional relay discovery fields; old Hub responses omit them. */
   publicKey: z.string().optional(),
+  // COMPAT(hubRelayPublicKey): added 2026-07-29; keep optional until protocol floor passes 2027-01-29.
+  relayPublicKey: z.string().optional(),
   relayEndpoint: z.string().nullable().optional(),
   relayUseTls: z.boolean().nullable().optional(),
   connectionReady: z.boolean().optional(),

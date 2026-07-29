@@ -50,6 +50,8 @@ export interface HubGinitDeviceEntry {
   isSelf: boolean;
   /** Optional for compatibility with older Hub deployments. */
   publicKey?: string;
+  // COMPAT(hubRelayPublicKey): added 2026-07-29; remove optionality after 2027-01-29.
+  relayPublicKey?: string;
   relayEndpoint?: string | null;
   relayUseTls?: boolean | null;
   connectionReady?: boolean;
@@ -97,6 +99,7 @@ const DeviceListItemSchema = z.object({
   status: z.string(),
   last_seen_at: z.string().nullable().optional(),
   public_key: z.string().optional(),
+  relay_public_key: z.string().optional(),
   relay_endpoint: z.string().nullable().optional(),
   relay_use_tls: z
     .union([z.boolean(), z.literal(0), z.literal(1)])
@@ -348,6 +351,7 @@ export class GinitHubEnroller implements HubGinitEnroller {
           isSelf: hub.deviceId !== undefined && item.device_id === hub.deviceId,
         };
         if (item.public_key) device.publicKey = item.public_key;
+        if (item.relay_public_key) device.relayPublicKey = item.relay_public_key;
         if (item.relay_endpoint !== undefined) device.relayEndpoint = item.relay_endpoint;
         if (item.relay_use_tls !== undefined) {
           device.relayUseTls = item.relay_use_tls === true || item.relay_use_tls === 1;

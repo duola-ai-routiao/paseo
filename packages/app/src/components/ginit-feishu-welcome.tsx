@@ -27,6 +27,7 @@ function ginitBaseUrl(): string {
 }
 
 const GINIT_TOKEN_STORAGE_KEY = "ginit.account.userToken";
+const RUNTIME_CLIENT_WAIT_MS = 15_000;
 
 async function loadStoredToken(): Promise<string | null> {
   try {
@@ -72,6 +73,54 @@ function findServingHostClient(): DaemonClient | null {
   return null;
 }
 
+async function waitForRuntimeClient(serverId: string): Promise<DaemonClient> {
+  const store = getHostRuntimeStore();
+  const immediate = store.getSnapshot(serverId);
+  if (immediate?.client && isHostRuntimeConnected(immediate)) {
+    return immediate.client;
+  }
+
+  return new Promise((resolve, reject) => {
+    let unsubscribe = () => {};
+    let timeout: ReturnType<typeof setTimeout> | null = null;
+    let settled = false;
+
+    const finish = (error: Error | null, client?: DaemonClient) => {
+      if (settled) return;
+      settled = true;
+      unsubscribe();
+      if (timeout) clearTimeout(timeout);
+      if (error) {
+        reject(error);
+      } else if (client) {
+        resolve(client);
+      } else {
+        reject(new Error("Connected to the host but no runtime client is available."));
+      }
+    };
+
+    const check = () => {
+      const snapshot = store.getSnapshot(serverId);
+      if (snapshot?.client && isHostRuntimeConnected(snapshot)) {
+        finish(null, snapshot.client);
+      }
+    };
+
+    timeout = setTimeout(() => {
+      const lastError = store.getSnapshot(serverId)?.lastError;
+      finish(
+        new Error(
+          lastError
+            ? `Connected to the host but runtime client did not become ready: ${lastError}`
+            : "Connected to the host but no runtime client is available.",
+        ),
+      );
+    }, RUNTIME_CLIENT_WAIT_MS);
+    unsubscribe = store.subscribe(serverId, check);
+    check();
+  });
+}
+
 async function resolveDaemonClient(
   probeAndUpsertDirectConnection: ReturnType<
     typeof useHostMutations
@@ -89,9 +138,7 @@ async function resolveDaemonClient(
     endpoint: window.location.host,
     ...(password?.trim() ? { password: password.trim() } : {}),
   });
-  const client = getHostRuntimeStore().getSnapshot(probed.serverId)?.client;
-  if (!client) throw new Error("Connected to the host but no runtime client is available.");
-  return client;
+  return waitForRuntimeClient(probed.serverId);
 }
 
 async function pollForGinitToken(
@@ -123,6 +170,7 @@ async function listDevicesAsUser(token: string, client: DaemonClient): Promise<W
         status: string;
         last_seen_at?: string | null;
         public_key?: string;
+        relay_public_key?: string;
         relay_endpoint?: string | null;
         relay_use_tls?: boolean | number | null;
         connection_ready?: boolean;
@@ -137,6 +185,7 @@ async function listDevicesAsUser(token: string, client: DaemonClient): Promise<W
         lastSeenAt: item.last_seen_at ?? null,
       };
       if (item.public_key) device.publicKey = item.public_key;
+      if (item.relay_public_key) device.relayPublicKey = item.relay_public_key;
       if (item.relay_endpoint !== undefined) device.relayEndpoint = item.relay_endpoint;
       if (item.relay_use_tls !== undefined) {
         device.relayUseTls = item.relay_use_tls === true || item.relay_use_tls === 1;
@@ -158,6 +207,7 @@ async function listDevicesAsUser(token: string, client: DaemonClient): Promise<W
         lastSeenAt: item.lastSeenAt,
       };
       if (item.publicKey) device.publicKey = item.publicKey;
+      if (item.relayPublicKey) device.relayPublicKey = item.relayPublicKey;
       if (item.relayEndpoint !== undefined) device.relayEndpoint = item.relayEndpoint;
       if (item.relayUseTls !== undefined) device.relayUseTls = item.relayUseTls;
       if (item.connectionReady !== undefined) device.connectionReady = item.connectionReady;
@@ -166,7 +216,7 @@ async function listDevicesAsUser(token: string, client: DaemonClient): Promise<W
   }
 }
 
-export function GinitFeishuWelcome() {
+export function GinitFeishuWelcome({ onConnected }: { onConnected?: (serverId: string) => void }) {
   useHosts();
   const { probeAndUpsertDirectConnection, upsertRelayConnection } = useHostMutations();
   const [state, setState] = useState<"idle" | "loading" | "ready" | "error">("idle");
@@ -256,7 +306,7 @@ export function GinitFeishuWelcome() {
         setError("This daemon is not ready for Relay connection. Update the host and retry.");
         return;
       }
-      if (!device.relayEndpoint || !device.publicKey) {
+      if (!device.relayEndpoint || !device.relayPublicKey) {
         setError("This daemon is missing Relay connection metadata. Update the host and retry.");
         return;
       }
@@ -265,14 +315,15 @@ export function GinitFeishuWelcome() {
           serverId: device.daemonId,
           relayEndpoint: device.relayEndpoint,
           useTls: device.relayUseTls ?? undefined,
-          daemonPublicKeyB64: device.publicKey,
+          daemonPublicKeyB64: device.relayPublicKey,
           label: device.name,
         });
+        onConnected?.(device.daemonId);
       } catch (cause) {
         setError(cause instanceof Error ? cause.message : String(cause));
       }
     },
-    [upsertRelayConnection],
+    [onConnected, upsertRelayConnection],
   );
 
   let content: ReactNode;

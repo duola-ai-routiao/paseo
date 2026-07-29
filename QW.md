@@ -682,3 +682,20 @@ W: testbed 的 /opt/ginit/ginit 是旧版（无 paseo_hub.py/paseo_hub_gateway.p
 **验证**：设置两个变量后，新交互 shell 中 `ginit ccd --help` 不再打印 "Daemon failed to start"；`ginit paseo daemon status` 显示 `Local Daemon: running, Connected Daemon: reachable`；hub-connector 日志显示 `Hub welcome received; device online`。
 
 **遗留**：机器上同时存在 3 个 daemon（Docker 32485 占 6767、deploy 810708 占 6769、prod-like 606102 占 6768），后续可考虑收敛；`GINIT_PASEO_HUB_WS_PORT` 是 `COMPAT(ginitHubWsPortEnv)` 标记的临时变量，目标 2027-01-28 移除，等 testbed hub 与 REST 同端口后可以删掉。
+
+## 2026-07-29 - Hub 设备列表中 Relay E2EE 公钥与 Hub 签名公钥混用
+
+**Q（问题）**：daemon 持有两套公钥——Ed25519 Hub 身份公钥（SPKI DER，base64 解码 44 字节，用于 hub.hello 签名验签）和 NaCl/Curve25519 Relay E2EE 公钥（原始 32 字节，用于端到端握手和客户端 TOFU 固定）。此前实现把两者混为一谈：① `hub.hello` 的 relay 块只带 `endpoint/use_tls`，不带 E2EE 公钥，Hub 无法向客户端发布可用于 E2EE 握手的 `relay_public_key`；② 客户端（welcome 页 / 设置页）拿设备的 `publicKey`（Hub 签名公钥）当作 `daemonPublicKeyB64` 去建 Relay E2EE 连接，密钥格式不对且未经验证，relay 块也无独立签名，endpoint/TLS/公钥可被单独篡改。
+
+**W（解决方法）**：把两套公钥在协议和代码中显式分开，Relay 元数据改带独立签名：
+
+1. **daemon 端（hub-connector.ts + bootstrap.ts）**：`relayMetadataProvider` 增加 `publicKey`（daemon 的 Curve25519 E2EE 公钥 `daemonKeyPair.publicKeyB64`）；`hub.hello` 的 relay 块新增 `public_key` 和 `signature` 字段，签名覆盖 canonical tuple `JSON.stringify(["relay-v1", endpoint, useTls, publicKey])`，用 Hub 身份私钥（Ed25519）签。Hub 验签通过后才发布该元组，只有 `relay_endpoint` 与 `relay_public_key` 同时存在才标记 `connection_ready=true`。
+2. **协议（messages.ts）**：`HubListDeviceEntrySchema` 新增 optional `relayPublicKey` 字段，带 `COMPAT(hubRelayPublicKey)` 注释（2026-07-29 加入，2027-01-29 后可去 optional）。老 Hub 不返回该字段时客户端正常解析（协议向后兼容）。
+3. **enroller（ginit-enroller.ts）**：设备列表解析 `relay_public_key` → `relayPublicKey`，透传给客户端。
+4. **客户端（ginit-feishu-welcome.tsx / host-page.tsx / welcome-ginit-device-row.tsx）**：Connect 前置检查从 `device.publicKey` 改为 `device.relayPublicKey`，`upsertRelayConnection` 的 `daemonPublicKeyB64` 也用 `relayPublicKey`——TOFU 固定的是 E2EE 公钥而非 Hub 签名公钥。
+5. **附带修复**：welcome 页 Feishu 登录后 `resolveDaemonClient` 不再盲取快照，改为 `waitForRuntimeClient` 订阅 host runtime store 最多等 15s，修掉「probe 成功但 client 尚未 ready」的竞态；设备 Connect 成功后经 `onConnected` 回调跳转到 `buildHostRootRoute(serverId)`。
+6. **文档**：`docs/ginit-paseo-design.md` 和 `docs/hub.md` 补充两套公钥的编码/长度/用途对照表和 Relay 块签名规范。
+
+**验证**：`npm run typecheck` 全 workspace 通过；`hub-connector.test.ts`（含新增签名校验用例，用 `cryptoVerify` 独立验签通过）、`messages.hub.test.ts`、`ginit-enroller.test.ts` 相关用例 43/43 通过（另 1 个 `hubUrl` 端口断言失败经 `git stash` 对照验证是预存问题，与本次改动无关）；定向 lint 0 警告。
+
+**遗留**：老 daemon 发送无公钥/无签名的旧式 relay 块时，Hub 侧必须忽略而不是与库存公钥拼接（该约束已写入文档，Hub 服务端实现在 ginit 仓库）；生产部署后需重建 B 端 Web bundle 并验证 8236 设备列表能拿到 `relay_public_key`。

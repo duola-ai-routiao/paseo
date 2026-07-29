@@ -12,7 +12,7 @@ import { getInjectedGinitConfig } from "@/constants/ginit-config";
 import { Button } from "@/components/ui/button";
 import { resolveAppVersion } from "@/utils/app-version";
 import { formatVersionWithPrefix } from "@/desktop/updates/desktop-updates";
-import { buildOpenProjectRoute } from "@/utils/host-routes";
+import { buildHostRootRoute, buildOpenProjectRoute } from "@/utils/host-routes";
 import { PaseoLogo } from "@/components/icons/paseo-logo";
 import { openExternalUrl } from "@/utils/open-external-url";
 import { isNative } from "@/constants/platform";
@@ -144,6 +144,13 @@ export function WelcomeScreen({ onHostAdded }: WelcomeScreenProps) {
     router.push("/settings");
   }, [router]);
 
+  const handleGinitConnected = useCallback(
+    (serverId: string) => {
+      router.replace(buildHostRootRoute(serverId));
+    },
+    [router],
+  );
+
   const scrollContentContainerStyle = useMemo(
     () => [styles.container, { paddingBottom: theme.spacing[6] + insets.bottom }],
     [theme.spacing, insets.bottom],
@@ -170,7 +177,7 @@ export function WelcomeScreen({ onHostAdded }: WelcomeScreenProps) {
             ) : null}
           </View>
 
-          <GinitFeishuWelcome />
+          <GinitFeishuWelcome onConnected={handleGinitConnected} />
 
           <Button
             variant="ghost"

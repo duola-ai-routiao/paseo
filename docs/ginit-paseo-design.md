@@ -40,12 +40,21 @@
 
 ## 4. 身份与设备模型
 
-### 4.1 两个身份，不要混淆
+### 4.1 两个身份、两套设备公钥，不要混淆
 
 | 身份                     | 凭证                                        | 用途                           |
 | ------------------------ | ------------------------------------------- | ------------------------------ |
 | **飞书用户**             | `ginit_` user token（device flow 授权获得） | 列自己账号下的设备、读账号 API |
 | **Paseo 设备（daemon）** | `pht_` device token + Ed25519 设备密钥对    | daemon 连 Hub WS、上报状态     |
+
+daemon 同时持有两套用途不可互换的公钥：
+
+| 字段                                  | 编码/长度                                               | 用途                                        |
+| ------------------------------------- | ------------------------------------------------------- | ------------------------------------------- |
+| `public_key` / `publicKey`            | Ed25519 SubjectPublicKeyInfo DER，base64 解码后 44 字节 | Hub 身份认证，以及给运行时 Relay 元数据签名 |
+| `relay_public_key` / `relayPublicKey` | NaCl/Curve25519 原始公钥，base64 解码后严格 32 字节     | Relay E2E 握手和客户端 TOFU 固定            |
+
+Hub 身份公钥不能传给 Relay 客户端。两者虽然都来自 daemon，但密钥格式、算法职责和信任生命周期均不同。
 
 ### 4.2 设备注册（enrollment）——只绑身份
 
@@ -64,13 +73,16 @@ enrollment **只发生一次**，建立「账号 ↔ 设备」归属。同一 de
 
 ```text
 daemon → hub.hello { deviceId, daemonId, publicKey, nonce, signature,
-                     relay { endpoint, use_tls } }   （Ed25519 签名，gateway 验签）
+                     relay { endpoint, use_tls, public_key, signature } }
 hub    → hub.welcome { connectionId, heartbeatIntervalMs }
 daemon → hub.workspace.snapshot { workspaces }
 daemon → hub.heartbeat（周期保活）
 ```
 
-这是 2026-07-29 修正的核心：**relay 元数据不再 enroll 时写死**。endpoint 改了，daemon 重连一次 hello 就原子刷新；老 daemon 不发 relay 块时保留旧值（向后兼容）。
+外层 `signature` 证明 Hub 连接身份；Relay 块的独立 Ed25519 签名覆盖 canonical tuple
+`["relay-v1", endpoint, use_tls, public_key]`，防止 endpoint、TLS 或 E2E 公钥被单独篡改。
+
+这是 2026-07-29 修正的核心：**relay 元数据不再 enroll 时写死**。endpoint 改了，daemon 重连一次 hello 就原子刷新。老 daemon 不发 Relay 块时保留旧值；发送旧式无公钥/无签名 Relay 块时 Hub 忽略它，不允许它和数据库里已有的公钥拼成一组看似可用但未认证的连接信息。只有 `relay_endpoint` 与 `relay_public_key` 同时存在时 `connection_ready=true`。
 
 ### 4.4 设备隔离
 
@@ -80,7 +92,7 @@ Hub 的一切设备查询都按当前飞书 user_id 过滤：账号 A 只能看�
 
 ### 5.1 relay E2E
 
-C 端从 Hub 拿到设备的 `relay_endpoint + daemon public_key` 后：
+C 端从 Hub 拿到设备的 `relay_endpoint + relay_public_key` 后：
 
 1. C 端与 daemon 都主动连 relay 的同一个 serverId 会话；
 2. C 端生成临时 Curve25519 密钥对，发 `e2ee_hello`；

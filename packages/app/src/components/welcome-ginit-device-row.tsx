@@ -10,6 +10,7 @@ export interface WelcomeHubDevice {
   status: string;
   lastSeenAt: string | null;
   publicKey?: string;
+  relayPublicKey?: string;
   relayEndpoint?: string | null;
   relayUseTls?: boolean | null;
   connectionReady?: boolean;
@@ -26,7 +27,7 @@ export function WelcomeGinitDeviceRow({
     device.status === "online" &&
     device.connectionReady === true &&
     Boolean(device.relayEndpoint) &&
-    Boolean(device.publicKey);
+    Boolean(device.relayPublicKey);
   const handlePress = useCallback(() => {
     void onConnect(device);
   }, [device, onConnect]);

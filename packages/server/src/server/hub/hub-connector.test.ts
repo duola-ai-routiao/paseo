@@ -140,14 +140,36 @@ describe.skipIf(process.platform === "win32")("HubConnector", () => {
       paseoHome: home,
       logger: silentLogger,
       webSocketImpl,
-      relayMetadataProvider: () => ({ endpoint: "relay.example.com:443", useTls: true }),
+      relayMetadataProvider: () => ({
+        endpoint: "relay.example.com:443",
+        useTls: true,
+        publicKey: "relay-public-key",
+      }),
     });
     connector.start();
 
     const socket = webSocketImpl.instances[0];
     socket.emit("open");
     const hello = JSON.parse(socket.sent[0]);
-    expect(hello.relay).toEqual({ endpoint: "relay.example.com:443", use_tls: true });
+    expect(hello.relay).toEqual({
+      endpoint: "relay.example.com:443",
+      use_tls: true,
+      public_key: "relay-public-key",
+      signature: expect.any(String),
+    });
+    const keypair = loadOrCreateHubDeviceKeyPair(home);
+    const relayPayload = Buffer.from(
+      JSON.stringify(["relay-v1", "relay.example.com:443", true, "relay-public-key"]),
+      "utf8",
+    );
+    const publicKey = createPublicKey({
+      key: Buffer.from(keypair.publicKeyB64, "base64"),
+      format: "der",
+      type: "spki",
+    });
+    expect(
+      cryptoVerify(null, relayPayload, publicKey, Buffer.from(hello.relay.signature, "base64")),
+    ).toBe(true);
     connector.stop();
   });
 

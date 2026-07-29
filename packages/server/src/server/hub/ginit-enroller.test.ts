@@ -342,6 +342,11 @@ describe.skipIf(process.platform === "win32")("GinitHubEnroller", () => {
               name: "paseo-self",
               status: "online",
               last_seen_at: "2026-07-26T00:00:00Z",
+              public_key: "hub-signing-key",
+              relay_public_key: "relay-e2ee-key",
+              relay_endpoint: "relay.example.com:443",
+              relay_use_tls: 1,
+              connection_ready: true,
             },
             {
               device_id: "dev-other",
@@ -367,6 +372,11 @@ describe.skipIf(process.platform === "win32")("GinitHubEnroller", () => {
         status: "online",
         lastSeenAt: "2026-07-26T00:00:00Z",
         isSelf: true,
+        publicKey: "hub-signing-key",
+        relayPublicKey: "relay-e2ee-key",
+        relayEndpoint: "relay.example.com:443",
+        relayUseTls: true,
+        connectionReady: true,
       },
       {
         deviceId: "dev-other",

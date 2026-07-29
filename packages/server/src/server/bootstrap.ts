@@ -1127,6 +1127,7 @@ export async function createPaseoDaemon(
         ? {
             endpoint: config.relayPublicEndpoint,
             useTls: config.relayPublicUseTls ?? config.relayUseTls ?? false,
+            publicKey: daemonKeyPair.publicKeyB64,
           }
         : null,
   });

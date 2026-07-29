@@ -409,3 +409,176 @@
 - **手动 enrollment**：用 node 生成 Ed25519 keypair + 已有 ginit user token 调 testbed API 完成注册，手动配置 `daemon.hub` 和 `daemon.relay`。踩坑：deviceId 不一致导致 4403 invalid signature（重新生成并确保一致）、同一 daemon_id 重复 enrollment 产生多个设备（DELETE 清理）。
 - **验证**：`~/.paseo`（srv_MxTCvRAiJQ8k）在 testbed Hub 上 online + connection_ready=true + relay 连接建立；三台设备全部 online + connection_ready。
 - **遗留**：`ginit paseo attach` 依赖的 paseo CLI hub 命令缺失，需确认版本；测试结束后 `ginit env use default` 切回 prod。
+
+## 2026-07-29 - ginit ccd 启动报错排查 + GINIT_PASEO_PATH/HUB_WS_PORT 修复
+
+**用户需求**：`ginit ccd` 启动时打印大量报错，问是什么原因；之后选定方案一（设置 `GINIT_PASEO_PATH` 指向仓库 CLI）。
+
+**总结**：定位到双根因——① npm 全局 `@getpaseo/server@0.2.3` 的 persisted-config schema 不含 `daemon.hub`，被 ginit auto-enroll 写入 `~/.paseo/config.json` 的 hub 块噎死；② ginit `isPaseoDaemonEnrolled` 把 `ws://...:8235/...`（testbed 实际）和 `ws://...:8090/...`（按 base_url 推导）字符串比对失败，每次都重新 `daemon start` 撞端口。所谓「一堆报错」其实是 `paseo daemon start` 把 daemon.log 末尾 30 行 `ws_runtime_metrics` 心跳原样倒出，并非真正的错误。修复方式：在 `~/.bashrc` 写入 `export GINIT_PASEO_PATH=/home/alan/paseo/packages/cli/bin/paseo` 和 `export GINIT_PASEO_HUB_WS_PORT=8235`。验证：新交互 shell 下 `ginit ccd --help` 不再打印 "Daemon failed to start"，`ginit paseo daemon status` 显示 running/reachable，hub-connector 收到 `Hub welcome received; device online`。QW.md 已记录，commit ddc841ce6 已推送。遗留：机器上仍有 3 个 daemon 并存（6767 Docker / 6768 prod-like / 6769 deploy），后续可收敛；`GINIT_PASEO_HUB_WS_PORT` 是 COMPAT 临时变量，目标 2027-01-28 移除。
+
+## 2026-07-29 - 验证 ginit ccd 是否每次启动都注册到远程 relay
+
+**用户需求**：「当前本地 ginit ccd 每次启动都会注册到远程中继服务器么？你测试使用 ginit ccd 命令」
+
+**测试方法**：在 `/home/alan/paseo` 目录下，导出 `GINIT_PASEO_PATH` + `GINIT_PASEO_HUB_WS_PORT` 后，用 `ginit ccd -p "ping"` 非交互模式跑了多次。每次跑前记录 `~/.dev/paseo-home-deploy/daemon.log` 中 `Sent hub.hello`、`relay_control_connected`、`relay_data_connected` 的累计次数和 8234/8235 端口的 TCP 连接指纹，跑完后再对比增量。
+
+**测试结论**：**不会重新注册**。`ginit ccd` 启动时走的是幂等检查路径——`cmdClaude` → `ensurePaseoDaemonEnrolled()`（[main.go:2511](ginit-cli/main.go#L2511)）→ `isPaseoDaemonEnrolled()`（[paseo_auto_enroll.go:70](ginit-cli/paseo_auto_enroll.go#L70)）三步判定：① `paseo.pid` 存在；② config 中 `hub.enabled=true`；③ `hub.url` 与 active env 期望 URL 字符串相等。三步全过就直接返回，**不会**触发 `cmdPaseoInstall`/`cmdPaseoAttach`，因此不会再调 `paseo daemon start`，也不会重写 hub.hello / relay 注册。
+
+**实测数据**：跑 `ginit ccd -p "ping"` 前后比对——`hub.hello +0`、`relay_control_connected +0`、`relay_data_connected +0`、`ws_hello +0`；8234/8235 端口 ESTABLISHED 连接指纹完全不变。daemon 与 hub 之间只在「daemon 重启」或「WS 断线重连」时才会重新 `Sent hub.hello`；relay 控制面（注册通道）也只在那时才重连。这次测试期间 relay_data 出现一次瞬时断开重连，但那是 daemon 内部 channel 波动，与 ccd 启动无关。
+
+**触发重新注册的真正条件**（只看代码 + 历史日志交叉验证）：① deploy daemon 进程被 kill；② `hub.url` 改变（ginit env 切换或端口覆盖变量变化）；③ `~/.paseo/.dev/paseo-home-deploy/paseo.pid` 被删；④ `hub.enabled=false`。任一发生才会让下次 `ccd` 走完整 install+attach 流程。
+
+**遗留**：历史上 16:45/16:50/16:54/19:39/19:44/19:46/19:49/21:16/22:40 等时间点的多次 `hub.hello` 都是 daemon 重启或 hub WS 断线导致的重连，不是 ccd 启动引起。
+
+---
+
+## 2026-07-29 8235 飞书 OAuth 回调与 8236 Welcome Connect 无响应修复、远端部署及 E2E 验证
+
+**用户需求：**
+
+- 使用 Playwright 复现 `http://150.5.173.43:8236/welcome` 的飞书登录和 `Connect` 按钮问题。
+- 修复 OAuth 回调地址 `http://150.5.173.43:8235/auth/feishu/callback` 被误当作 WebSocket 请求处理的问题。
+- 先完成 OAuth/网关单点测试，再完成登录、设备列表和 `Connect` 的完整 E2E。
+- 通过 SSH 登录 `150.5.173.43`，确认远端容器静态目录与挂载方式，带时间戳备份后执行最小部署。
+
+### 一、最终结论
+
+本次问题包含两个相互独立的故障，均已修复并部署：
+
+1. **8235 OAuth HTTP 回调兼容问题**：Ginit WebSocket 网关使用了随 `websockets` 版本变化的顶层 server API，导致普通 HTTP OAuth 回调在部分运行环境中落入错误的升级处理路径。网关现在显式使用 `websockets.legacy.server.WebSocketServerProtocol` 和 `websockets.legacy.server.serve`，同一端口可以同时正确处理飞书 OAuth 普通 `GET` 回调和 Paseo WebSocket 连接。
+2. **8236 `Connect` 点击后页面不变化**：Welcome 页在存在运行期 Ginit 配置时会有意关闭“任意 host 在线后自动离开 Welcome”的通用逻辑，但成功写入 Relay 连接后又没有显式导航，因此按钮操作成功也会继续停留在 `/welcome`。现在 `upsertRelayConnection` 成功后会把目标 `serverId` 回传给 `WelcomeScreen`，由后者导航到目标 host 根路由。
+
+此外，最终 E2E 暴露并修复了一个首次打开页面时的真实竞态：`probeAndUpsertDirectConnection()` 已完成网络探测并返回，但新建 Host runtime controller 仍在异步挂载 client；旧代码立即读取 snapshot，偶发得到空 client 并报 `Connected to the host but no runtime client is available.`。现在会订阅目标 host 的 runtime 状态，等待 client 真正 online，最长 15 秒，并在超时时保留 runtime 的最后错误。
+
+### 二、Ginit 网关修复
+
+涉及仓库：`/home/alan/ginit/ginit`
+
+- `ginit-server/ginit/wsgateway.py`
+  - 显式导入 `websockets.legacy.server.WebSocketServerProtocol`。
+  - 显式使用 `websockets.legacy.server.serve` 启动服务。
+  - 保持 8235 同端口的普通 HTTP OAuth callback 与 WebSocket upgrade 共存。
+- `ginit-server/tests/test_ws_gateway.py`
+  - 新增真实 HTTP 回归测试，请求 `/auth/feishu/callback?code=test&state=missing`。
+  - 断言请求进入 OAuth 业务处理并返回 `410`，而不是返回 WebSocket upgrade 错误。
+- `scripts/testbed/sync-server.sh`
+  - 新增 `GINIT_TESTBED_SYNC_SCOPE=gateway` 最小同步范围。
+  - gateway 范围只同步 `wsgateway.py` 并重启 `ginit.service`，不会覆盖同仓库中其他未完成或无关改动。
+
+一个重要排查结论：早期 `curl -I` 使用的是 `HEAD`，而飞书 OAuth 实际回调使用 `GET`，所以 `HEAD` 的结果不能作为 OAuth callback 是否正常的最终判断。本次单点测试和回归测试都使用普通 `GET`。
+
+### 三、Paseo Welcome 与 Connect 修复
+
+涉及仓库：`/home/alan/paseo`
+
+- `packages/app/src/components/ginit-feishu-welcome.tsx`
+  - 设备 API 响应增加 `relay_public_key` 读取，并映射到 `relayPublicKey`。
+  - Relay 连接使用专用 `relayPublicKey`，不再误用设备 enrollment 的 `publicKey`。
+  - `GinitFeishuWelcome` 新增可选 `onConnected(serverId)` 回调。
+  - `upsertRelayConnection` 成功后触发 `onConnected`。
+  - 首次直连探测后不再立即读取可能尚未就绪的 snapshot，而是订阅对应 Host runtime，等待 client online；等待上限为 15 秒，完成或超时后都会清理订阅与 timer。
+- `packages/app/src/components/welcome-screen.tsx`
+  - 接收 Ginit Connect 成功事件。
+  - 使用 `router.replace(buildHostRootRoute(serverId))` 显式离开 `/welcome` 并进入所选 host。
+- `packages/app/src/components/welcome-ginit-device-row.tsx`
+  - 只有设备为 online、`connectionReady=true`、存在 Relay endpoint 且存在 Relay public key 时，`Connect` 才可用。
+
+### 四、远端目录、挂载和最小部署
+
+SSH 别名与目标已经核实：
+
+- SSH 别名：`ginit-testbed`
+- 用户与主机：`root@150.5.173.43`
+- 容器：`paseo-web`
+- 镜像：`paseo:local-ginit`
+- 对外端口：宿主 `8236` 映射到容器 `6767/tcp`
+- Web UI 目录：`/usr/local/lib/node_modules/@getpaseo/server/dist/server/web-ui`
+- 唯一 Docker volume：`paseo-web-home -> /home/paseo`
+
+静态 Web UI 目录不在 volume 中，而是在容器可写层。因此本次只替换当前容器内的生成静态资源，没有部署或覆盖其他源代码；如果未来删除并重新创建容器，必须重新构建镜像或重新部署 Web UI，否则容器会恢复镜像内的旧 bundle。
+
+部署过程：
+
+1. 本地运行 `npm run build:daemon-web-ui`，生成新的 Expo Web bundle。
+2. 将生成目录通过 tar stream 直接写入容器内带时间戳的 staging 目录。
+3. 校验 staging 中 `index.html` 和目标 bundle 均存在。
+4. 将当前 `web-ui` 原子移动为时间戳备份，再将 staging 原子移动为正式 `web-ui`。
+5. 只重启远端 `paseo-web` 容器；没有重启本机或主 Paseo daemon（6767）。
+6. 重启后轮询 Docker health 和远端 `/welcome`，确认 ready 后才执行 E2E。
+
+当前线上主 bundle：
+
+- `index-f2f928a7efdab73aa22a9ec7cca271a5.js`
+
+当前容器内保留两份可回滚备份：
+
+- `web-ui.backup-20260729T151517Z`
+- `web-ui.backup-20260729T225600Z`
+
+部署时第一次在 `docker restart` 返回后立即访问 8236，出现过一次短暂 connection refused。只读日志确认这不是崩溃：旧服务停止到新应用记录 `Server listening` 之间约有 1.36 秒正常启动窗口，随后 WebSocket 自动重连，容器约 5 秒后进入 healthy。后续部署验证应始终轮询 health 和 HTTP ready，不能把 restart 后的瞬时不可访问误判为持续故障。
+
+### 五、单点测试结果
+
+全部单点验证通过：
+
+- `GET http://150.5.173.43:8235/auth/feishu/callback?...`：无效/过期 state 返回 OAuth 业务状态 `410`。
+- 回调响应正文不包含 WebSocket/upgrade 错误。
+- `POST http://150.5.173.43:8090/auth/device/start`：返回 `200`。
+- `ws://150.5.173.43:8235/ws/v1/paseo`：WebSocket upgrade 成功。
+- `ginit.service`：`active` 且 `enabled`。
+- Ginit 目标回归：`python3 -m unittest -v ginit-server.tests.test_ws_gateway`，共 8 项，`8/8 OK`。
+- 8236 `/welcome`：返回 `HTTP 200`。
+- `paseo-web`：Docker health 为 `healthy`。
+
+当前 shell 没有全局 `pytest` 命令，因此第一次尝试返回 command not found；改用仓库当前 Python 环境的 `python3 -m unittest` 执行相同目标测试，8 项全部通过。这是测试入口差异，不是测试失败。
+
+### 六、Playwright E2E 结果
+
+E2E 使用全新隔离 Chromium context。为了复用用户已完成的飞书授权，测试从远端容器配置中只在进程内存读取已缓存的 Ginit account token，并通过 `addInitScript` 注入浏览器 localStorage；token 未打印、未写入测试文件或截图。
+
+最终严格 E2E 断言及结果：
+
+- 点击前 URL：`http://150.5.173.43:8236/welcome`。
+- Welcome 成功加载 `My hosts` 设备列表。
+- 页面显示 3 个 online host，3 个 `Connect` 按钮均已渲染。
+- 点击第一个启用的 `Connect`。
+- 点击后 URL：`http://150.5.173.43:8236/open-project`，确认已经离开 `/welcome`。
+- 浏览器 `@paseo:daemon-registry` 中新增并持久化 1 条 Relay connection：endpoint 为 `150.5.173.43:8234`。
+- 同一 registry 中保留当前页面服务宿主的 direct connection：`150.5.173.43:8236`。
+- 页面无 `pageerror`，无失败网络请求诊断。
+- 最终页面显示 Paseo 主界面，包括工作区列表以及 `Add a project`、`Import session`、`Setup providers` 等入口。
+- 最终截图：`/tmp/paseo-e2e-after-connect.png`。
+
+`Connect` 的代码目标路由是 `/h/<serverId>`。目标 host 根页面在没有需要恢复的已选工作区时，会按照现有 `resolveHostIndexRoute` 设计立即重定向到全局 `/open-project`，所以浏览器导航时间线可能只稳定记录 `/open-project`，不会长期停留在 `/h/<serverId>`。本次通过三个独立证据确认不是“按钮没反应”：点击前严格保持 `/welcome`、点击后离开 `/welcome` 并进入主界面、localStorage 中真实持久化了所选 host 的 Relay connection。
+
+### 七、Paseo 静态检查结果
+
+- `npm run typecheck`：所有 workspace 通过。
+- `npm run lint`：2882 个文件，0 warning、0 error。
+- 本次修改文件的定向格式化与格式检查通过。
+- `git diff --check`：Paseo 与 Ginit 两个仓库均通过。
+- 全仓 `npm run format:check` 只报告既有且未参与本次修改的 `ginit-paseo-llm-task-brief.md`，因此未擅自修改该文件。
+
+### 八、最终状态与后续注意事项
+
+- 飞书 OAuth callback 已正常工作，用户授权完成后能加载设备列表。
+- `Connect` 不再停留在 Welcome；成功后建立并持久化 Relay E2EE/TOFU 连接，进入 Paseo 主界面。
+- 8235 同时支持普通 OAuth HTTP GET 与 Paseo WebSocket upgrade。
+- 8236 当前提供新 bundle，容器健康，旧静态目录已有两份时间戳备份。
+- 本次未提交 Git commit，也没有覆盖两个 dirty worktree 中的其他用户改动。
+- 回滚 Web UI 时应先确认目标备份目录，再将当前 `web-ui` 留作新备份并原子恢复指定旧目录，随后重启 `paseo-web` 并轮询 health；不要直接删除当前目录。
+- 当前静态部署位于容器可写层，正式长期方案应把新 Web UI 编入 `paseo:local-ginit` 镜像或固化进部署脚本，避免容器重建后回退到旧资源。
+
+## 2026-07-29 - 分离 Hub 签名公钥与 Relay E2EE 公钥 + relay 块独立签名
+
+**用户需求**：继续推进 ginit-paseo 链路改造，修正 daemon 两套公钥（Hub 身份签名 vs Relay E2EE 握手）混用的问题，客户端 Connect 应使用真正的 Relay E2EE 公钥做 TOFU。
+
+**最终内容总结**：
+
+- **核心修复**：`hub.hello` 的 relay 块新增 `public_key`（Curve25519 E2EE 公钥）+ `signature`（Ed25519 签 `["relay-v1", endpoint, useTls, publicKey]` canonical tuple）；`bootstrap.ts` 把 `daemonKeyPair.publicKeyB64` 接入 `relayMetadataProvider`。
+- **协议**：`HubListDeviceEntrySchema` 新增 optional `relayPublicKey`（带 `COMPAT(hubRelayPublicKey)` 标注，2027-01-29 清理），enroller 解析 `relay_public_key` 透传。
+- **客户端**：welcome 页和设置页 Connect 前置检查及 `upsertRelayConnection` 的 `daemonPublicKeyB64` 全部从 `publicKey`（Hub 签名公钥）改为 `relayPublicKey`（E2EE 公钥），TOFU 固定对象修正。
+- **附带**：welcome 页登录后等待 runtime client 就绪改为订阅式 `waitForRuntimeClient`（15s 超时，修竞态）；设备 Connect 成功后自动跳转 host 主页。
+- **文档**：`docs/ginit-paseo-design.md`、`docs/hub.md` 补充两套公钥对照表（Ed25519 SPKI 44 字节 vs NaCl 原始 32 字节）和 Relay 块签名/发布规则；QW.md 已记录。
+- **验证**：typecheck 全过；hub-connector / messages.hub / ginit-enroller 三个测试文件 43/43 通过（含新增 relay 签名验签用例）；1 个 `hubUrl` 端口断言失败经 stash 对照确认为预存问题；lint 0 警告。
+- **遗留**：Hub 服务端（ginit 仓库）需实现验签与 `relay_public_key` 发布逻辑；B 端 Web bundle 需重新构建部署后在 8236 实测 Connect。
