@@ -315,3 +315,15 @@
 - 结论：8236 飞书登录后**能看到**本机 daemon（paseo-srv_nvcX，online）。「临时不登录」方案存在（清 PASEO_PASSWORD 直连）但未采用——按推荐走飞书登录。
 
 **遗留**: ① device flow 最后一步飞书手机 App「确认登录」需用户在手机上点一下（CLI 场景无浏览器，不在 App 里确认不算完成授权）；点完后 paseo-web 会缓存新账号 token，长期有效。② A 容器 config 现同时含 enroll 身份 + 账号 token（enrolled host），与 B paseo-web 的 cacheOnly 只读宿主定位不同，属预期。
+
+---
+
+## 2026-07-29 写系统设计文档 + 整体端到端重测
+
+**用户需求 query**: 帮我总结整体的设计写个文档，然后整体端到端再测试一遍。
+
+**最终内容总结**:
+
+- 新增设计文档 `docs/ginit-paseo-design.md`：三平面（控制面 ginit Hub / 数据面 relay / 执行面 A 端）、角色拓扑、两类身份（飞书 user token vs 设备 pht\_ token+Ed25519）、enrollment 只绑身份而运行时状态走签名 hello、relay E2E + TOFU 公钥信任、运行期 endpoint 配置、testbed→生产 443 迁移步骤、COMPAT 清理索引、已知限制。已推送（paseo `c0e8ae100`）。
+- 端到端重测全绿：部署 ginit hello-relay-metadata（`4ff8a35`+`8d92690`）到 testbed；重建 A 镜像并修复 UID 漂移（10001→1000 卷权限）后 daemon hello→online；revoke 幽灵设备 srv_oEgw 并修 `list_devices` 漏过滤 revoked；paseo-web 剥设备身份后不再 4401 重连；relay E2EE 经 8234 用 daemon 公钥握手连到 A 成功调 RPC；8236 新 bundle 无硬编码、运行期注入 ginit 配置、Welcome 有 Login with Feishu、设备列表只列 srv_nvcX online。
+- 遗留：8236 paseo-web 有密码，干净浏览器需先输密码；welcome 页浏览器内「选设备→upsertRelayConnection」自动连接未单独跑（relay E2EE 已用 node 证明数据面），TOFU 指纹持久化待真实 Connect 后验证。

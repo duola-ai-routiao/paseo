@@ -482,3 +482,26 @@ W: testbed 的 /opt/ginit/ginit 是旧版（无 paseo_hub.py/paseo_hub_gateway.p
 6. **最终状态**：hub DB 两台 `paseo-srv_nvcX`(A)+`paseo-srv_oEgw`(B) 均 online + connection_ready + relay=150.5.173.43:8234；relay sessions=2；8236 Host 页设备列表两台 online，本机 daemon 可见。
 
 **结论**：8236 飞书登录后**能看到**本机 daemon（paseo-srv_nvcX，online）。两处修复：① 恢复 A 的 enroll 身份（重签 device token + 写回 hub 配置）② ginit-server verification_uri 支持 bare-IP（`GINIT_PASEO_HUB_WS_PORT`，commit `40726c4`）。
+
+---
+
+## 2026-07-29 - 端到端重测 + revoked 设备仍出现在列表 + 容器 UID 漂移
+
+**Q（问题）**：整体端到端重测（部署 ginit hello-relay-metadata → 重建 A 镜像 → 清理幽灵设备 → 更新 B paseo-web → Playwright 验证）过程中暴露三个问题：① A 容器重启后 crash-loop `EACCES lstat .config.json.*.tmp`；② 撤销（revoke）B 的幽灵设备 `2ecbaaa4` 后，C 端设备列表仍显示它（status=revoked）；③ paseo-web 换新镜像后 hub connector 用已撤销的 `pht_` token 反复 4401 重连。
+
+**W（解决方法）**：
+
+1. **EACCES 根因是镜像 UID 漂移，不是配置损坏**。旧镜像 paseo 用户 uid=10001，新镜像（docker/base/Dockerfile 逻辑）paseo 用户 uid=1000；`/home/alan/paseo-deploy/paseo-home/.paseo` 卷内容是 uid 10001 所有，新容器（1000）写 config tmp 文件被拒。修复：`docker run --rm -v paseo-home:/ph node:22-bookworm-slim chown -R 1000:1000 /ph/.paseo` 后 `docker compose up -d` 即恢复。教训：卷内持久化目录的 owner uid 与镜像 ENTRYPOINT 用户 uid 必须一致，重建镜像换 uid 后要同步 chown。
+2. **revoked 设备被 `list_devices` 返回**。`paseo_hub.list_devices` 查询没带 `status != 'revoked'`，导致已拆除的 web 宿主仍以 `revoked` 状态出现在「My enrolled hosts」。修复：查询加 `AND status != 'revoked'`（行保留在表里供审计，`verify_device` 本就已排除 revoked）；补 `test_revoked_devices_are_hidden_from_list`（ginit `8d92690`）。部署 rsync `paseo_hub.py` 到 testbed + `systemctl restart ginit` 后，账号设备列表只剩 `paseo-srv_nvcX online`。
+3. **paseo-web 用已撤销 token 重连**。它的 `daemon.hub` 还带 `enabled/url/deviceId/token`（旧 enroll），connector 启动后向 hub 发送 hello，gateway 因 token 已撤销返回 4401 并循环重连。修复：进容器把 `daemon.hub` 里的 `enabled/url/deviceId/token` 删掉、只留 `ginitBaseUrl/ginitToken`（只读账号代理），重启后日志 `Hub not configured; connector idle until enrollment`，不再上线。
+
+**端到端验证结果（全绿）**：
+
+- A 端 daemon：`Sent hub.hello` → `Hub welcome received; device online` → `hub.workspace.snapshot`；hub DB `eab4adff` `online`、relay metadata 正常（hello 携带，gateway 已应用）。
+- relay：`/health` 200，`v2:server(control) connected serverId=srv_nvcX2Px9Rmfh` 在线。
+- 设备列表（账号 API）：只剩 `paseo-srv_nvcX online`（幽灵 srv_oEgw 已 revoked 且不再返回）。
+- **relay E2EE 数据面**：`node /tmp/relay-e2e-test.mjs` 经 `ws://150.5.173.43:8234` 用 daemon 公钥完成 E2EE 握手连到 A 的 srv_nvcX，`hubGetEnrollStatus` 返回 `enrolled:true`、`hubListDevices` 成功——证明 C→relay→A 数据链路真实可用。
+- **C 端 Web UI（8236）**：新 bundle 无 `150.5.173.43:8090` 硬编码，`window.__PASEO_GINIT_CONFIG__={"baseUrl":"http://150.5.173.43:8090"}` 由运行期注入；清掉 localStorage 后 Welcome 页正常渲染「Login with Feishu」；Settings→Host→Ginit Hub 显示只读提示「This web host is read-only — it is not enrolled as a device」+ 设备列表只列 srv_nvcX。
+- Hub 飞书 device flow：`/auth/device/start` 正常签发 device_code + verification_uri（登录路径可用）。
+
+**遗留（非本次范围）**：① 8236 的 paseo-web daemon 设了 PASEO_PASSWORD，干净浏览器首次访问需先输密码才能进 Feishu 流程——建议后续给「密码缺失时统一引导输入」的兜底；② welcome 页 C 端「选设备 → upsertRelayConnection」的浏览器内自动连接未单独跑通（relay E2EE 已用 node 证明数据面通），TOFU 指纹持久化待真实「Connect」动作落 HostProfile 后验证。
