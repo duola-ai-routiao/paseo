@@ -505,3 +505,23 @@ W: testbed 的 /opt/ginit/ginit 是旧版（无 paseo_hub.py/paseo_hub_gateway.p
 - Hub 飞书 device flow：`/auth/device/start` 正常签发 device_code + verification_uri（登录路径可用）。
 
 **遗留（非本次范围）**：① 8236 的 paseo-web daemon 设了 PASEO_PASSWORD，干净浏览器首次访问需先输密码才能进 Feishu 流程——建议后续给「密码缺失时统一引导输入」的兜底；② welcome 页 C 端「选设备 → upsertRelayConnection」的浏览器内自动连接未单独跑通（relay E2EE 已用 node 证明数据面通），TOFU 指纹持久化待真实「Connect」动作落 HostProfile 后验证。
+
+---
+
+## 2026-07-29 - 8236 welcome 页 Feishu 登录报「Password required」无密码输入入口
+
+**Q(问题)**: 打开 `http://150.5.173.43:8236/welcome` 点「Login with Feishu」直接报错 `Password required`，干净浏览器（无已存密码）无法登录。
+
+**W(解决方法)**:
+
+1. **复现**：Playwright 打开 welcome 页 → 点 Login with Feishu → 页面显示 `Password required`，console 显示 `initial connection hint probe failed ... Password required`，B daemon 日志刷 `Rejected WebSocket connection with invalid daemon password`（hasToken:false）。
+2. **根因**：`resolveDaemonClient`（`ginit-feishu-welcome.tsx`）在「无已连接 client」时调用 `probeAndUpsertDirectConnection({ endpoint: window.location.host })` 盲探——不传密码，命中 daemon 的密码保护直接失败；且错误路径只把 `Password required` 原文渲染出来，没有任何输入密码的入口。07-28 修复过的「window.prompt 输密码缓存」兜底在 07-29「拆 Web 宿主即设备」重构（cacheOnly 化）时被改没了。
+3. **修复（paseo `bfd4ff772`）**：
+   - `resolveDaemonClient` 增加可选 `password` 参数，盲探时带上；
+   - 登录 catch 里识别 `Password required` → 渲染密码输入框 + 「Sign in with password」按钮，重试把密码经 `probeAndUpsertDirectConnection` 传入（密码随之被持久化到 host 连接，后续会话复用）；
+   - 新增 `findServingHostClient`：优先复用「服务当前页面的 host」的已连接 runtime client，避免对已存在但仍在线的 host 盲目重新盲探导致再次 `Password required`。
+4. **部署**：`npm run build:daemon-web-ui` 出新 bundle（`index-19a390ba…`），打包 `packages/server/dist/server/web-ui` 经 SSH docker cp 进 B 容器 `…/server/web-ui` 原位替换并 `docker restart paseo-web`，8236 index.html 引用新 bundle ✅（ginit config `__PASEO_GINIT_CONFIG__` 注入保持正常）。
+5. **Playwright 验证**：清空 localStorage host 后 → 点 Login with Feishu → 出现密码框（`This daemon requires a password. Enter it below...`）→ 输密码 → Sign in → 连上 daemon（`Client connected via hello`，fetch_agents/workspaces 正常）并跳转 open-project，密码已写回 host 连接。**「Password required」裸报错已消除，干净浏览器可自助输入密码登录**。
+6. **已知边界**：密码登录成功后 welcome 因 host 已在线自动跳 open-project（host 在线即非 welcome 场景），飞书 device flow 需在未连接场景触发；密码兜底本身工作正常。console 另有 `ws://localhost:6767` 的连接尝试（app 默认 bootstrap 探本机 daemon，8236 场景无本机 daemon，console 报 refused 属正常噪声）。
+
+**结论**：8236 welcome 页干净浏览器登录时给出密码输入入口，输一次密码即连上并持久化；`Password required` 裸报错问题已修复（commit `bfd4ff772` 已推送，8236 bundle 已更新为 `index-19a390ba…`）。

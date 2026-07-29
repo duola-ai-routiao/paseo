@@ -327,3 +327,18 @@
 - 新增设计文档 `docs/ginit-paseo-design.md`：三平面（控制面 ginit Hub / 数据面 relay / 执行面 A 端）、角色拓扑、两类身份（飞书 user token vs 设备 pht\_ token+Ed25519）、enrollment 只绑身份而运行时状态走签名 hello、relay E2E + TOFU 公钥信任、运行期 endpoint 配置、testbed→生产 443 迁移步骤、COMPAT 清理索引、已知限制。已推送（paseo `c0e8ae100`）。
 - 端到端重测全绿：部署 ginit hello-relay-metadata（`4ff8a35`+`8d92690`）到 testbed；重建 A 镜像并修复 UID 漂移（10001→1000 卷权限）后 daemon hello→online；revoke 幽灵设备 srv_oEgw 并修 `list_devices` 漏过滤 revoked；paseo-web 剥设备身份后不再 4401 重连；relay E2EE 经 8234 用 daemon 公钥握手连到 A 成功调 RPC；8236 新 bundle 无硬编码、运行期注入 ginit 配置、Welcome 有 Login with Feishu、设备列表只列 srv_nvcX online。
 - 遗留：8236 paseo-web 有密码，干净浏览器需先输密码；welcome 页浏览器内「选设备→upsertRelayConnection」自动连接未单独跑（relay E2EE 已用 node 证明数据面），TOFU 指纹持久化待真实 Connect 后验证。
+
+---
+
+## 2026-07-29 8236 welcome 页 Feishu 登录「Password required」修复
+
+**用户需求 query**: Playwright 登录 `http://150.5.173.43:8236/welcome` 总报错 `Password required`，要求复现并修复。
+
+**最终内容总结**:
+
+- 复现：干净浏览器点「Login with Feishu」直接报 `Password required`，B daemon 日志刷 `Rejected ... invalid daemon password`（hasToken:false）。
+- 根因：`resolveDaemonClient` 在无已连接 client 时盲探 `window.location.host` 不传密码，命中 daemon 密码保护失败；错误路径只渲染报错文本，没有密码输入入口（07-28 的 prompt 兜底在 07-29 拆设备重构时丢失）。
+- 修复（paseo `bfd4ff772`，已推送）：welcome 登录错误路径识别 `Password required` 后渲染密码输入框 + 登录按钮，重试经 `probeAndUpsertDirectConnection` 把密码带上并持久化；并新增 `findServingHostClient` 优先复用服务当前页 host 的已连接 client，避免对已在线 host 重复盲探。
+- 部署：`npm run build:daemon-web-ui` 出新 bundle `index-19a390ba…`，原位替换 B 容器 `…/server/web-ui` 并重启 paseo-web，8236 index.html 引用新 bundle、ginit config 注入正常。
+- 验证：Playwright 清空 host 后 → 点 Feishu 登录 → 出现密码框 → 输密码 → 连上 daemon 并跳 open-project，密码写回 host 连接；裸报错消除，干净浏览器可自助登录。
+- 边界：host 在线后 welcome 自动跳 open-project（在线即非 welcome 场景），device flow 需未连接场景触发；`ws://localhost:6767` 是 app 默认探本机 daemon 的正常噪声。
