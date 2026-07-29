@@ -381,3 +381,17 @@
 - 欢迎页设备列表补充 Relay metadata，抽出设备行组件，并对 online、`connection_ready` 且 metadata 完整的设备启用 Relay E2EE + TOFU Connect。
 - 验证结果：8236 `/api/health` 返回 200，容器日志为 `authRequired=false`；清空浏览器存储后 `/welcome` 显示 Login with Feishu，点击后不再出现密码输入框，daemon 日志确认无密码 WebSocket 连接成功；`build:daemon-web-ui`、`typecheck`、定向 lint、`git diff --check` 通过。
 - 遗留：飞书授权需要用户在飞书客户端确认；远程容器本次通过 `docker run` 手工重建，后续应把无密码环境持久化到正式部署脚本/compose，避免重新部署时恢复密码。
+
+---
+
+## 2026-07-29 本机 daemon 注册信息审计 + 6769 connection_ready 修复
+
+**用户需求 query**: 本机 daemon 注册到中继服务器的信息有哪些（PID/锁文件/socket/会话上下文/环境变量/权限/MCP/Hooks），以及为什么中继服务器没收到本地启动时的注册信息。
+
+**最终内容总结**:
+
+- **注册信息审计**：daemon 注册到 Hub/Relay 只发三类信息——enrollment（device_id/daemon_id/public_key/name，一次性绑身份）、hub.hello（签名身份+relay{endpoint,use_tls}，每次连接上报）、workspace.snapshot（workspaces[] 含 cwd/provider/status）。你列的 4 类元数据（进程 PID/锁文件/socket、会话上下文、环境变量/权限、MCP/Hooks）**目前都不上报**——这是设计意图（控制面只管身份+在线状态+relay 元数据+workspace 摘要）。
+- **中继没收到注册信息的根因**：6769 daemon 的 `daemon.relay` 配置缺 `endpoint/publicEndpoint`（ginit 只写 `enabled:true`），且跑的 server dist 代码早于 relayMetadataProvider 实现，导致 `hub.hello` 不带 relay 块 → Hub 端 `relay_endpoint=NULL` → `connection_ready=false`。修复=补 relay 配置 + `npm run build:server` 重建 dist + 重启。
+- **ginit 自动注册缺陷修复**：`isPaseoDaemonEnrolled` 期望值推导不支持 split-port 部署（testbed 8235），导致重复 attach；`patchPaseoConfig` 无条件覆盖 listen（曾把 6769 改回 6767）。已修复并加测试。
+- **验证**：6769 `connection_ready=true`、8234 容器 `connection_ready=true`、Playwright 8236 Host 页两台设备均 online、`go test .`/`go vet .` 全通过、新 ginit 二进制已安装。
+- **遗留**：active env（default=prod）与 6769 daemon（testbed）不一致，需 `ginit env use testbed` 或设 `GINIT_PASEO_HUB_WS_PORT=8235` 才能让 `ginit ccd` 自动注册到 testbed；4 类元数据上报范围待用户确认安全边界。

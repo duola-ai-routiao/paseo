@@ -580,3 +580,42 @@ W: testbed 的 /opt/ginit/ginit 是旧版（无 paseo_hub.py/paseo_hub_gateway.p
 **遗留**：飞书授权页需要真实用户在飞书客户端确认，当前 Playwright 只验证到授权页打开；远程容器是手工 `docker run` 重建，后续应将同样的无密码环境写入正式部署 compose/脚本，避免下一次部署重新注入密码。
 
 ---
+
+---
+
+## 2026-07-29 - 本机 daemon 注册到远程中继的信息审计 + 6769 connection_ready 修复
+
+**Q(问题)**: 用户问本机 daemon 注册到中继服务器（150.5.173.43）的信息有哪些（如 PID/锁文件/socket/会话上下文/环境变量/权限/MCP/Hooks），以及为什么中继服务器没收到本地启动时的注册信息。
+
+**W(解决方法)**:
+
+1. **注册信息审计（代码证据）**：daemon 注册到 Hub/Relay 的信息分三层——
+   - **enrollment（一次性绑身份）**：`POST /api/paseo/enrollments`（Bearer ginit user token）+ `/redeem` 发送 `device_id`/`daemon_id`/`public_key`/`name`，服务端存 `paseo_devices` 表。**不含** PID/工作目录/环境变量/权限/MCP/Hooks。
+   - **hub.hello（每次连接的运行时状态）**：`deviceId`/`daemonId`/`publicKey`/`nonce`/`signature`（Ed25519 签名）+ `relay{endpoint,use_tls}`（来自 `relayMetadataProvider`）。**不含** PID/锁文件/socket 路径/环境快照/权限白名单/模型配置/MCP 服务/Hooks 列表。
+   - **hub.workspace.snapshot（workspace 摘要）**：`workspaces[]` 含 `id`/`cwd`（绝对路径）/`provider`/`status`，**不含** agent 会话明细/transcript/环境/权限。
+   - **relay 握手**：URL query 只发 `serverId`/`role`/`v`，E2EE 握手只发公钥。**不含**任何进程/环境/权限信息。
+   - **结论**：你列的 4 类元数据（进程/会话/环境/MCP-Hooks）**目前都不上报**——这是设计意图（控制面只管身份+在线状态+relay 元数据+workspace 摘要）。如需扩展需明确安全边界（工作区路径已属敏感信息）。
+
+2. **中继没收到注册信息的根因（6769 daemon connection_ready=false）**：
+   - 6769 的 `config.json` 里 `daemon.relay` 只有 `enabled:true`（ginit `patchPaseoConfig` 只写 enabled），缺 `endpoint`/`publicEndpoint` → `relayMetadataProvider` 返回 null → `hub.hello` 不带 relay 块 → Hub 端 `relay_endpoint` 保持 NULL → `connection_ready=false`。
+   - 更深层：6769 跑的 server dist 代码是 07-28 构建的（早于 07-29 的 relayMetadataProvider 实现），即使补了 config 也不发 relay 块。**必须 `npm run build:server` 重建 dist**。
+   - 修复：补 `daemon.relay.endpoint/publicEndpoint` + `npm run build:server` 重建 + 重启 6769 → `connection_ready=true`，relay 日志确认 `srv_V_6a3jxLQ4Ip` control 连接建立。
+
+3. **ginit 自动注册（`ginit ccd`）两个缺陷修复**：
+   - `isPaseoDaemonEnrolled` 期望值推导不支持 split-port 部署（testbed HTTP:8090/WS:8235），导致已注册的 daemon 被误判为未注册 → 每次 `ginit ccd` 都重复 attach。修复：新增 `expectedPaseoHubWSURL`，与 daemon 侧 `toHubWebSocketUrl` 完全一致（含 `GINIT_PASEO_HUB_WS_PORT` 兼容）。
+   - `patchPaseoConfig` 无条件覆盖 `listen`（曾把 6769 改回 6767 导致端口错乱）。修复：已有 `listen` 时保留，不覆盖。
+   - 测试：新增 `TestPatchPaseoConfigPreservesExistingListen` + `TestExpectedPaseoHubWSURL`，`go test .` 全通过。
+
+4. **已安装 ginit 二进制过旧**：`~/.local/bin/ginit` 是 07-19 的 1.4.53，不含 07-29 的 `ensurePaseoDaemonEnrolled`。用 `go build -o ~/.local/bin/ginit .` 重建安装（含全部修复）。
+
+**验证**：
+
+- 6769 `connection_ready=true`，relay 日志 `srv_V_6a3jxLQ4Ip` control 连接 ✅
+- 8234 容器 `srv_nvcX2Px9Rmfh` `connection_ready=true` ✅
+- Playwright 8236 Host 页「My enrolled hosts」显示两台设备均 online ✅
+- `go test .` / `go vet .` 全通过 ✅
+
+**遗留**：
+
+- 当前 active env 是 `default=https://ginit.opensii.ai`，而 6769 daemon 注册在 testbed（150.5.173.43）——两者不一致。若要让 `ginit ccd` 自动注册到 testbed，需 `ginit env use <testbed>` 或设 `GINIT_PASEO_HUB_WS_PORT=8235`。
+- 4 类元数据（进程/会话/环境/MCP-Hooks）上报范围需用户确认安全边界后再扩展。
