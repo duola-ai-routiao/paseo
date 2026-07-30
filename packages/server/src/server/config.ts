@@ -304,6 +304,7 @@ function resolveServiceProxyConfig(
 interface ResolvedWebUi {
   enabled: boolean;
   distDir: string | null;
+  clientOnly: boolean;
 }
 
 function resolveWebUiConfig(
@@ -325,6 +326,10 @@ function resolveWebUiConfig(
   return {
     enabled,
     distDir,
+    clientOnly:
+      parseBooleanEnv(env.PASEO_WEB_UI_CLIENT_ONLY) ??
+      persisted.features?.webUi?.clientOnly ??
+      false,
   };
 }
 

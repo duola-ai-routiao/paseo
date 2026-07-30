@@ -154,6 +154,7 @@ const FeatureWebUiSchema = z
   .object({
     enabled: z.boolean().optional(),
     distDir: z.string().min(1).optional(),
+    clientOnly: z.boolean().optional(),
   })
   .strict();
 

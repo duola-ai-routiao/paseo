@@ -66,6 +66,13 @@ describe("daemon web UI config", () => {
     expect(config.webUi.enabled).toBe(true);
   });
 
+  test("PASEO_WEB_UI_CLIENT_ONLY enables client-only web UI mode", async () => {
+    const home = await createPaseoHome({ version: 1 });
+    const config = loadConfig(home, { env: { PASEO_WEB_UI_CLIENT_ONLY: "true" } });
+
+    expect(config.webUi.clientOnly).toBe(true);
+  });
+
   test("CLI web UI enable override wins over env and persisted config", async () => {
     const home = await createPaseoHome({
       version: 1,

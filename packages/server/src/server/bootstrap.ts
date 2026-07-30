@@ -408,6 +408,7 @@ export interface PaseoDaemonConfig {
   webUi?: {
     enabled: boolean;
     distDir: string | null;
+    clientOnly?: boolean;
   };
   ginitHub?: {
     baseUrl: string | null;
@@ -488,6 +489,7 @@ function mountWebUi(app: express.Application, config: PaseoDaemonConfig, logger:
     createWebUiMiddleware({
       enabled: config.webUi?.enabled ?? false,
       distDir: config.webUi?.distDir ?? null,
+      clientOnly: config.webUi?.clientOnly ?? false,
       label: getHostname(),
       logger,
       ginit: {

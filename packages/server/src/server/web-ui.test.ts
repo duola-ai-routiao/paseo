@@ -74,6 +74,7 @@ function createApp(options: {
   distDir: string | null;
   publicDir?: string;
   ginit?: { baseUrl?: string; hubWsUrl?: string };
+  clientOnly?: boolean;
 }): express.Application {
   const app = express();
   app.use(
@@ -82,6 +83,7 @@ function createApp(options: {
       distDir: options.distDir,
       label: "test-label",
       logger,
+      clientOnly: options.clientOnly,
       ...(options.ginit ? { ginit: options.ginit } : {}),
     }),
   );
@@ -157,6 +159,15 @@ describe("daemon web UI route module", () => {
     expect(res.body).toContain('"listen":"localhost:');
     expect(res.body).toContain('"useTls":false');
     expect(res.body).toContain('"label":"test-label"');
+  });
+
+  test("omits the daemon connection hint for client-only web deployments", async () => {
+    const app = createApp({ enabled: true, distDir, publicDir, clientOnly: true });
+
+    const res = await request(app, "GET", "/");
+
+    expect(res.status).toBe(200);
+    expect(res.body).not.toContain("window.__PASEO_INITIAL_DAEMON_CONNECTION__");
   });
 
   test("injects hint before closing head tag", async () => {

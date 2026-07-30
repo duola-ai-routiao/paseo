@@ -142,20 +142,71 @@ async function resolveDaemonClient(
 }
 
 async function pollForGinitToken(
-  client: DaemonClient,
+  client: DaemonClient | null,
   deviceCode: string,
   expiresIn: number,
 ): Promise<string> {
   const deadline = Date.now() + expiresIn * 1000;
   while (Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 2000));
-    const poll = await client.hubDevicePoll(ginitBaseUrl(), deviceCode);
-    if (poll.status === "completed" && poll.token) return poll.token;
+    try {
+      const poll = await pollGinitDeviceFlow(client, deviceCode);
+      if (poll.status === "completed" && poll.token) return poll.token;
+    } catch (cause) {
+      if (!isWeb || !(cause instanceof TypeError)) throw cause;
+    }
   }
   throw new Error("Feishu login timed out");
 }
 
-async function listDevicesAsUser(token: string, client: DaemonClient): Promise<WelcomeHubDevice[]> {
+async function startGinitDeviceFlow(client: DaemonClient | null): Promise<{
+  deviceCode: string;
+  verificationUri: string;
+  expiresIn: number;
+}> {
+  if (!isWeb) {
+    if (!client) throw new Error("No Paseo host is connected yet.");
+    return client.hubDeviceStart(ginitBaseUrl());
+  }
+  const normalized = ginitBaseUrl().replace(/\/+$/, "");
+  const response = await fetch(`${normalized}/auth/device/start`, { method: "POST" });
+  if (!response.ok) throw new Error(`Ginit device start failed (${response.status})`);
+  const data = (await response.json()) as {
+    device_code: string;
+    verification_uri: string;
+    expires_in: number;
+  };
+  return {
+    deviceCode: data.device_code,
+    verificationUri: data.verification_uri,
+    expiresIn: data.expires_in,
+  };
+}
+
+async function pollGinitDeviceFlow(
+  client: DaemonClient | null,
+  deviceCode: string,
+): Promise<{ status: "pending" | "completed"; token: string | null }> {
+  if (!isWeb) {
+    if (!client) throw new Error("No Paseo host is connected yet.");
+    return client.hubDevicePoll(ginitBaseUrl(), deviceCode);
+  }
+  const normalized = ginitBaseUrl().replace(/\/+$/, "");
+  const response = await fetch(`${normalized}/auth/device/poll`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ device_code: deviceCode }),
+  });
+  if (response.status === 202) return { status: "pending", token: null };
+  if (!response.ok) throw new Error(`Ginit device poll failed (${response.status})`);
+  const data = (await response.json()) as { status: "pending" | "completed"; token?: string };
+  return { status: data.status, token: data.token ?? null };
+}
+
+async function listDevicesAsUser(
+  token: string,
+  client: DaemonClient | null,
+): Promise<WelcomeHubDevice[]> {
   const normalized = ginitBaseUrl().replace(/\/+$/, "");
   try {
     const response = await fetch(`${normalized}/api/paseo/devices`, {
@@ -194,6 +245,7 @@ async function listDevicesAsUser(token: string, client: DaemonClient): Promise<W
       return device;
     });
   } catch (directError) {
+    if (!client) throw directError;
     const response = await client.hubListDevices();
     if (!response.success) {
       throw new Error(response.error ?? "Failed to load devices", { cause: directError });
@@ -226,7 +278,7 @@ export function GinitFeishuWelcome({ onConnected }: { onConnected?: (serverId: s
   const [password, setPassword] = useState("");
   const [needsPassword, setNeedsPassword] = useState(false);
 
-  const refreshDevices = useCallback(async (token: string, client: DaemonClient) => {
+  const refreshDevices = useCallback(async (token: string, client: DaemonClient | null) => {
     setDevices(await listDevicesAsUser(token, client));
   }, []);
 
@@ -236,11 +288,15 @@ export function GinitFeishuWelcome({ onConnected }: { onConnected?: (serverId: s
       setError(null);
       setNeedsPassword(false);
       try {
-        const client = await resolveDaemonClient(probeAndUpsertDirectConnection, passwordOverride);
-        const start = await client.hubDeviceStart(ginitBaseUrl());
+        const client = isWeb
+          ? (findServingHostClient() ?? findConnectedClient())
+          : await resolveDaemonClient(probeAndUpsertDirectConnection, passwordOverride);
+        const start = await startGinitDeviceFlow(client);
         await openExternalUrl(start.verificationUri);
         const token = await pollForGinitToken(client, start.deviceCode, start.expiresIn);
-        await client.hubLoginGinit(ginitBaseUrl(), token, { cacheOnly: true });
+        if (client) {
+          await client.hubLoginGinit(ginitBaseUrl(), token, { cacheOnly: true });
+        }
         await storeToken(token);
         await refreshDevices(token, client);
         setState("ready");
@@ -265,7 +321,9 @@ export function GinitFeishuWelcome({ onConnected }: { onConnected?: (serverId: s
       if (!token) return;
       setState("loading");
       try {
-        const client = await resolveDaemonClient(probeAndUpsertDirectConnection);
+        const client = isWeb
+          ? (findServingHostClient() ?? findConnectedClient())
+          : await resolveDaemonClient(probeAndUpsertDirectConnection);
         await refreshDevices(token, client);
         setState("ready");
       } catch (cause) {
@@ -290,7 +348,9 @@ export function GinitFeishuWelcome({ onConnected }: { onConnected?: (serverId: s
       try {
         const token = await loadStoredToken();
         if (!token) throw new Error("Login with Feishu first");
-        const client = await resolveDaemonClient(probeAndUpsertDirectConnection);
+        const client = isWeb
+          ? (findServingHostClient() ?? findConnectedClient())
+          : await resolveDaemonClient(probeAndUpsertDirectConnection);
         await refreshDevices(token, client);
       } catch (cause) {
         setError(cause instanceof Error ? cause.message : String(cause));

@@ -143,6 +143,8 @@ export interface WebUiMiddlewareOptions {
   enabled: boolean;
   distDir: string | null;
   label: string;
+  /** Serve the app without treating the static host as a Paseo daemon. */
+  clientOnly?: boolean;
   logger: Logger;
   /**
    * Runtime Ginit hub endpoints advertised to the browser via an injected
@@ -156,7 +158,7 @@ export interface WebUiMiddlewareOptions {
 }
 
 export function createWebUiMiddleware(options: WebUiMiddlewareOptions): RequestHandler {
-  const { enabled, distDir, label, logger } = options;
+  const { enabled, distDir, label, logger, clientOnly = false } = options;
   const childLogger = logger.child({ module: "web-ui" });
 
   if (!enabled || !distDir) {
@@ -184,7 +186,15 @@ export function createWebUiMiddleware(options: WebUiMiddlewareOptions): RequestH
       return;
     }
 
-    serveWebUiFile({ distDir, requestPath: req.path, label, req, res, ginit: options.ginit });
+    serveWebUiFile({
+      distDir,
+      requestPath: req.path,
+      label,
+      req,
+      res,
+      ginit: options.ginit,
+      clientOnly,
+    });
   };
 }
 
@@ -195,10 +205,11 @@ interface ServeWebUiFileOptions {
   req: Parameters<RequestHandler>[0];
   res: Parameters<RequestHandler>[1];
   ginit?: WebUiMiddlewareOptions["ginit"];
+  clientOnly: boolean;
 }
 
 function serveWebUiFile(options: ServeWebUiFileOptions): void {
-  const { distDir, requestPath, label, req, res, ginit } = options;
+  const { distDir, requestPath, label, req, res, ginit, clientOnly } = options;
 
   const target = resolveTargetFile(distDir, requestPath);
   if (!target) {
@@ -223,7 +234,7 @@ function serveWebUiFile(options: ServeWebUiFileOptions): void {
   }
 
   if (isIndexHtml) {
-    sendIndexHtml(res, finalFile, req, label, ginit);
+    sendIndexHtml(res, finalFile, req, label, ginit, clientOnly);
     return;
   }
 
@@ -244,10 +255,11 @@ function sendIndexHtml(
   req: Parameters<RequestHandler>[0],
   label: string,
   ginit?: WebUiMiddlewareOptions["ginit"],
+  clientOnly = false,
 ): void {
   try {
     const html = readFileSync(filePath, "utf-8");
-    const injected = injectConnectionHint(html, req, label, ginit);
+    const injected = injectConnectionHint(html, req, label, ginit, clientOnly);
     res.status(200).send(injected);
   } catch {
     res.status(500).end();
@@ -266,17 +278,17 @@ function injectConnectionHint(
   req: Parameters<RequestHandler>[0],
   label: string,
   ginit?: WebUiMiddlewareOptions["ginit"],
+  clientOnly = false,
 ): string {
-  const host = typeof req.headers.host === "string" ? req.headers.host : "";
-  const useTls = req.protocol === "https";
-  const hint = {
-    listen: host,
-    useTls,
-    label,
-  };
-  const scripts: string[] = [
-    `<script>window.__PASEO_INITIAL_DAEMON_CONNECTION__=${serializeInlineScriptJson(hint)}</script>`,
-  ];
+  const scripts: string[] = [];
+  if (!clientOnly) {
+    const host = typeof req.headers.host === "string" ? req.headers.host : "";
+    const useTls = req.protocol === "https";
+    const hint = { listen: host, useTls, label };
+    scripts.push(
+      `<script>window.__PASEO_INITIAL_DAEMON_CONNECTION__=${serializeInlineScriptJson(hint)}</script>`,
+    );
+  }
   if (ginit?.baseUrl) {
     scripts.push(
       `<script>window.__PASEO_GINIT_CONFIG__=${serializeInlineScriptJson(ginit)}</script>`,

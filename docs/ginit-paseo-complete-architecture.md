@@ -980,6 +980,11 @@ ginit Hub 只做控制面，Paseo relay 负责数据面。不要把完整 Paseo 
 5. **部署**：8234 容器的 `daemon.hub` 已剥掉 `enabled/url/deviceId/token`，只留 `ginitBaseUrl`/`ginitToken`（供只读代理）。重启后日志 `Hub not configured; connector idle until enrollment`，不再作为 device 上线。
 6. **脚本**：删除一次性 enroll 脚本 `scripts/ginit-enroll.mjs`、`ginit-enroll-direct.mjs`、`_enroll-bare-ip.mjs`。
 
+8236 这类只托管静态 Web client 的部署还必须设置 `PASEO_WEB_UI_CLIENT_ONLY=true`。
+该模式不会向 HTML 注入 `__PASEO_INITIAL_DAEMON_CONNECTION__`，避免浏览器把
+静态站点自身误当成 Paseo daemon 后永久显示 `Connecting`。真正托管 daemon Web UI
+的实例保持默认值 `false`。
+
 设备列表现在只包含真正跑了 ginit 被控端服务（enroll 过）的 daemon；paseo-web 宿主不再出现在列表里。
 
 ### 13.8 运行期 endpoint 配置、hello 中继元数据与 TOFU（2026-07-28 已完成代码侧）

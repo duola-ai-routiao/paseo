@@ -657,7 +657,7 @@ W: testbed 的 /opt/ginit/ginit 是旧版（无 paseo_hub.py/paseo_hub_gateway.p
 
 **Q（问题）**：在仓库目录跑 `ginit ccd` 时打印 `Daemon failed to start in background (exit code 1)` 加一大段 JSON 日志，看起来像「一堆报错」。但机器上其实有 daemon 在跑。
 
-**W（解决方法）**：根因是双重的，需要两个环境变量同时设置：
+**W（根因与旧版临时规避）**：旧版需要两个环境变量同时设置：
 
 1. **第一根因：npm 全局 `@getpaseo/server@0.2.3` 不认识 `daemon.hub` 字段。**
    - `ginit ccd` 启动前会调 `paseo daemon start` 确保 daemon 在线，默认用 PATH 里的 `paseo`，也就是 npm 全局 `@getpaseo/cli@0.2.3`，它内嵌 `@getpaseo/server@0.2.3` 的 `persisted-config.js` 没有 `hub` 这个 key（grep 0 命中）。
@@ -671,7 +671,7 @@ W: testbed 的 /opt/ginit/ginit 是旧版（无 paseo_hub.py/paseo_hub_gateway.p
    - 端口不匹配 → `isPaseoDaemonEnrolled=false` → 走 `cmdPaseoInstall` → 重复 `daemon start` → 端口被占，子进程 exit 1。
    - **解决**：`export GINIT_PASEO_HUB_WS_PORT=8235`，让 `expectedPaseoHubWSURL` 走 split-port 分支（参见 [ginit-cli/paseo_auto_enroll.go:115-132](ginit-cli/paseo_auto_enroll.go#L115-L132)，`COMPAT(ginitHubWsPortEnv)`）。
 
-3. **写入 `~/.bashrc`**：
+3. **旧版临时规避（写入 `~/.bashrc`）**：
    ```bash
    export GINIT_PASEO_PATH=/home/alan/paseo/packages/cli/bin/paseo
    export GINIT_PASEO_HUB_WS_PORT=8235
@@ -679,9 +679,17 @@ W: testbed 的 /opt/ginit/ginit 是旧版（无 paseo_hub.py/paseo_hub_gateway.p
 
 **「一堆报错」的真相**：用户看到的报错其实是 `tailFile(daemon.log, 30)` 把 daemon.log 末尾 30 行原样倒出。那些 JSON 行都是上一次 dev daemon 写入的 `ws_runtime_metrics` 心跳（level 30），不是错误。真正的错只有一行：`[Config] Invalid config ... Unrecognized key: "hub"`，埋在更早的日志深处。
 
-**验证**：设置两个变量后，新交互 shell 中 `ginit ccd --help` 不再打印 "Daemon failed to start"；`ginit paseo daemon status` 显示 `Local Daemon: running, Connected Daemon: reachable`；hub-connector 日志显示 `Hub welcome received; device online`。
+**代码根修**：
 
-**遗留**：机器上同时存在 3 个 daemon（Docker 32485 占 6767、deploy 810708 占 6769、prod-like 606102 占 6768），后续可考虑收敛；`GINIT_PASEO_HUB_WS_PORT` 是 `COMPAT(ginitHubWsPortEnv)` 标记的临时变量，目标 2027-01-28 移除，等 testbed hub 与 REST 同端口后可以删掉。
+- `resolvePaseoHome` 先尊重显式 `PASEO_HOME`，再走 checkout / `~/.paseo` 默认值。
+- running 与 enrolled 分开判断：解析 `paseo.pid` 并对 PID 做 signal-0 存活检查；已有 daemon 时绝不再执行 `daemon start`。
+- enrollment 优先比较持久化的 `daemon.hub.ginitBaseUrl` 与当前 ginit control-plane URL。Hub WS 可以合法使用另一个端口，因此不再依赖 `GINIT_PASEO_HUB_WS_PORT` 猜测是否属于同一环境；没有 `ginitBaseUrl` 的旧配置才走原兼容推导。
+- `ensurePaseoCLI` 与其他 Paseo 调用统一尊重 `GINIT_PASEO_PATH`，避免安装路径误用 PATH 上不支持 Hub schema 的旧 CLI。
+- `cmdPaseoInstall` 本身也检查 live PID，重复执行 install 不会重启已运行 daemon。
+
+**验证**：不设置 `GINIT_PASEO_HUB_WS_PORT` 时，split-port testbed 配置仍判定 enrolled；live PID 不重复 start；stale PID 会判定未运行；`GINIT_PASEO_PATH` 覆盖安装启动使用的 CLI。`ginit ccd --help` 不再打印 "Daemon failed to start"。
+
+**遗留**：机器上同时存在多个 daemon，后续可考虑收敛；`GINIT_PASEO_HUB_WS_PORT` 仍是老 enrollment 配置的 `COMPAT(ginitHubWsPortEnv)`，目标 2027-01-28 移除。Paseo 后台启动器仍会丢弃子进程 stderr 并 tail 共享旧日志，独立的诊断体验修复应在 Paseo 仓库处理。
 
 ## 2026-07-29 - Hub 设备列表中 Relay E2EE 公钥与 Hub 签名公钥混用
 
