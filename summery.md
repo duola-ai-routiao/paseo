@@ -599,3 +599,17 @@ E2E 使用全新隔离 Chromium context。为了复用用户已完成的飞书�
 - 合并后 CLI 包出现 4 个 typecheck 错误（`listWorkspaceScripts` 等不存在于 DaemonClient），根因是跨包 dist 声明过期，按 CLAUDE.md 规则执行 `npm run build:server` 重建依赖栈后修复。
 - 验证：全量 typecheck 通过、lint 0 警告 0 错误、config.test.ts + config-ginit.test.ts 共 7 个测试全部通过。
 - 合并提交 05498e0e4 已推送到 gair 远程（GAIR-NLP/paseo）。
+
+## 2026-07-31 合并 GAIR-NLP/paseo 的 main 到 feat_ginit_connect_20260730
+
+**用户需求 query：** 不是和 origin/main（duola-ai-routiao fork）合并，而是和 https://github.com/GAIR-NLP/paseo.git 的 main 分支合并，解决 config.ts / device-keypair.ts 冲突。
+
+**最终内容总结：**
+
+- gair/main 领先 3 个提交（#1 resume execution sessions、#2 cut 0.2.0-beta.5、#3 adopt existing Paseo sessions），合并产生 14 个冲突文件。
+- 11 个 package.json + package-lock.json：版本号冲突（HEAD 0.2.0 vs gair/main 0.2.0-beta.5），统一取 HEAD 的 0.2.0。
+- config.ts：`ginitHub`（HEAD）与 `hub`（gair/main）配置字段并存保留。
+- device-keypair.ts（add/add 冲突）：两套 keypair 实现合并为统一版——磁盘 schema 取两版并集（deviceId/privateKeyB64/secretKeyB64 全 optional 兼容读取，加载后补全重写），deviceId 统一由公钥 SHA-256 推导（与 gair/main 一致），运行时 bundle 同时暴露 secretKeyB64（ginit HubConnector 用）和 signCanonical/privateKey（PaseoHubConnector 用），保留 signHubHello 函数。
+- 派生修复：persisted-config.ts 两个重复 hub schema 合并为一个（含 ginitBaseUrl/ginitToken）；bootstrap.ts 中 ginit 的 HubConnector 改名 ginitHubConnector，与 gair/main 的 PaseoHubConnector（配置轮询管理）共存。
+- 验证：build:server、全量 typecheck、lint 全绿；hub+config 6 个测试文件 41 个测试全部通过。注意坑：本机 ~/.bashrc 里 GINIT_PASEO_HUB_WS_PORT=8235 会让 ginit-enroller 测试拿到带端口的 hubUrl 而失败，测试时需 env -u 屏蔽。
+- 合并提交 4382975b7 已推送至 gair（GAIR-NLP/paseo）。
