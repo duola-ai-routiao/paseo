@@ -539,6 +539,18 @@ export function loadConfig(
     relayUseTls: relay.useTls,
     relayPublicUseTls: relay.publicUseTls,
     ginitHub,
+    hub:
+      persisted.daemon?.hub?.enabled &&
+      persisted.daemon.hub.url &&
+      persisted.daemon.hub.deviceId &&
+      persisted.daemon.hub.token
+        ? {
+            enabled: true,
+            url: persisted.daemon.hub.url,
+            deviceId: persisted.daemon.hub.deviceId,
+            token: persisted.daemon.hub.token,
+          }
+        : undefined,
     serviceProxy,
     webUi,
     appBaseUrl,

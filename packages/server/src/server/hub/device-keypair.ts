@@ -1,42 +1,91 @@
 import { existsSync, readFileSync } from "node:fs";
+import {
+  createHash,
+  createPrivateKey,
+  createPublicKey,
+  generateKeyPairSync,
+  sign,
+  type KeyObject,
+} from "node:crypto";
 import path from "node:path";
 import { z } from "zod";
 import type pino from "pino";
-import { createHash, generateKeyPairSync, sign as cryptoSign } from "node:crypto";
-
 import { ensurePrivateFile, writePrivateFileAtomicSync } from "../private-files.js";
 
-const HubDeviceKeyPairSchema = z.object({
+// On-disk format is the union of the two historical layouts so both parse:
+//   - ours (ginit line):   { v, deviceId, publicKeyB64, secretKeyB64 }
+//   - gair/main (paseo):   { v, publicKeyB64, privateKeyB64 }
+// Missing fields are re-derived from the private key on load; the file is
+// re-written in the full format on first load or regeneration.
+const StoredHubKeyPairSchema = z.object({
   v: z.literal(1),
-  deviceId: z.string().min(1),
+  deviceId: z.string().min(1).optional(),
   publicKeyB64: z.string().min(1),
-  secretKeyB64: z.string().min(1),
+  privateKeyB64: z.string().min(1).optional(),
+  secretKeyB64: z.string().min(1).optional(),
 });
 
-type StoredHubDeviceKeyPair = z.infer<typeof HubDeviceKeyPairSchema>;
+const FILENAME = "hub-device-keypair.json";
 
-const KEYPAIR_FILENAME = "hub-device-keypair.json";
-
-export interface HubDeviceKeyPairBundle {
+export interface HubDeviceKeyPair {
   deviceId: string;
-  /** SPKI DER, base64 — the format the ginit hub verifies signatures with. */
+  /** SPKI DER, base64 — the format the hub verifies signatures with. */
   publicKeyB64: string;
   /** PKCS8 DER, base64. */
+  privateKeyB64: string;
+  /** COMPAT(ginit-hub-connector): base64 PKCS8 secret key for signHubHello; same value as privateKeyB64. */
   secretKeyB64: string;
+  privateKey: KeyObject;
+  signCanonical(value: string): string;
 }
 
-function isValidStoredKeyPair(parsed: StoredHubDeviceKeyPair): boolean {
+function deviceIdForPublicKey(publicKeyB64: string): string {
+  const chars = createHash("sha256").update(publicKeyB64).digest("hex").slice(0, 32).split("");
+  chars[12] = "5";
+  chars[16] = "a";
+  const hex = chars.join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+function isValidPrivateKey(privateKeyB64: string): boolean {
   try {
-    const publicKeyBytes = Buffer.from(parsed.publicKeyB64, "base64");
-    const secretKeyBytes = Buffer.from(parsed.secretKeyB64, "base64");
-    // Ed25519 SPKI DER is 44 bytes; PKCS8 DER is 48 bytes. Anything else is a
-    // legacy raw-keypair file (e.g. X25519) and must be regenerated.
-    if (publicKeyBytes.byteLength !== 44 || secretKeyBytes.byteLength !== 48) return false;
-    cryptoSign(null, Buffer.from("probe"), { key: secretKeyBytes, format: "der", type: "pkcs8" });
+    createPrivateKey({ key: Buffer.from(privateKeyB64, "base64"), format: "der", type: "pkcs8" });
     return true;
   } catch {
     return false;
   }
+}
+
+function buildBundle(privateKey: KeyObject): HubDeviceKeyPair {
+  const publicKeyB64 = createPublicKey(privateKey)
+    .export({ type: "spki", format: "der" })
+    .toString("base64");
+  const privateKeyB64 = privateKey.export({ type: "pkcs8", format: "der" }).toString("base64");
+  return {
+    deviceId: deviceIdForPublicKey(publicKeyB64),
+    publicKeyB64,
+    privateKeyB64,
+    secretKeyB64: privateKeyB64,
+    privateKey,
+    signCanonical: (value) => sign(null, Buffer.from(value), privateKey).toString("base64"),
+  };
+}
+
+function persistKeypair(filePath: string, bundle: HubDeviceKeyPair): void {
+  writePrivateFileAtomicSync(
+    filePath,
+    JSON.stringify(
+      {
+        v: 1,
+        deviceId: bundle.deviceId,
+        publicKeyB64: bundle.publicKeyB64,
+        privateKeyB64: bundle.privateKeyB64,
+        secretKeyB64: bundle.secretKeyB64,
+      },
+      null,
+      2,
+    ) + "\n",
+  );
 }
 
 /**
@@ -47,57 +96,41 @@ function isValidStoredKeyPair(parsed: StoredHubDeviceKeyPair): boolean {
 export function loadOrCreateHubDeviceKeyPair(
   paseoHome: string,
   logger?: pino.Logger,
-): HubDeviceKeyPairBundle {
+): HubDeviceKeyPair {
+  const filePath = path.join(paseoHome, FILENAME);
   const log = logger?.child({ module: "hub-device-keypair" });
-  const filePath = path.join(paseoHome, KEYPAIR_FILENAME);
-
   if (existsSync(filePath)) {
     try {
       ensurePrivateFile(filePath);
-      const raw = readFileSync(filePath, "utf8");
-      const parsed = HubDeviceKeyPairSchema.parse(JSON.parse(raw));
-      if (!isValidStoredKeyPair(parsed)) {
-        throw new Error("Stored Hub device keypair is not an Ed25519 DER keypair");
+      const parsed = StoredHubKeyPairSchema.parse(JSON.parse(readFileSync(filePath, "utf8")));
+      const privateKeyB64 = parsed.privateKeyB64 ?? parsed.secretKeyB64;
+      if (!privateKeyB64 || !isValidPrivateKey(privateKeyB64)) {
+        throw new Error("Stored Hub device keypair is not an Ed25519 PKCS8 keypair");
       }
-
-      log?.info({ filePath, deviceId: parsed.deviceId }, "Loaded Hub device keypair");
-      return {
-        deviceId: parsed.deviceId,
-        publicKeyB64: parsed.publicKeyB64,
-        secretKeyB64: parsed.secretKeyB64,
-      };
+      const bundle = buildBundle(
+        createPrivateKey({
+          key: Buffer.from(privateKeyB64, "base64"),
+          format: "der",
+          type: "pkcs8",
+        }),
+      );
+      if (bundle.publicKeyB64 === parsed.publicKeyB64) {
+        if (parsed.deviceId !== bundle.deviceId || !parsed.privateKeyB64 || !parsed.secretKeyB64) {
+          persistKeypair(filePath, bundle);
+        }
+        log?.info({ filePath, deviceId: bundle.deviceId }, "Loaded Hub device keypair");
+        return bundle;
+      }
+      throw new Error("Stored Hub device keypair public key does not match private key");
     } catch (error) {
       log?.warn({ err: error, filePath }, "Failed to load Hub device keypair, regenerating");
     }
   }
-
-  // Generate a new Ed25519 keypair in the DER encodings the ginit hub expects.
-  const { publicKey, privateKey } = generateKeyPairSync("ed25519");
-  const publicKeyB64 = publicKey.export({ format: "der", type: "spki" }).toString("base64");
-  const secretKeyB64 = privateKey.export({ format: "der", type: "pkcs8" }).toString("base64");
-
-  // Derive deviceId from public key (first 16 bytes of SHA-256 hash, as UUID)
-  const publicKeyBytes = Buffer.from(publicKeyB64, "base64");
-  const hash = createHash("sha256").update(publicKeyBytes).digest();
-  const deviceId = [
-    hash.subarray(0, 4).toString("hex"),
-    hash.subarray(4, 6).toString("hex"),
-    hash.subarray(6, 8).toString("hex"),
-    hash.subarray(8, 10).toString("hex"),
-    hash.subarray(10, 16).toString("hex"),
-  ].join("-");
-
-  const payload: StoredHubDeviceKeyPair = {
-    v: 1,
-    deviceId,
-    publicKeyB64,
-    secretKeyB64,
-  };
-
-  writePrivateFileAtomicSync(filePath, JSON.stringify(payload, null, 2) + "\n");
-  log?.info({ filePath, deviceId }, "Saved Hub device keypair");
-
-  return { deviceId, publicKeyB64, secretKeyB64 };
+  const { privateKey } = generateKeyPairSync("ed25519");
+  const bundle = buildBundle(privateKey);
+  persistKeypair(filePath, bundle);
+  log?.info({ filePath, deviceId: bundle.deviceId }, "Saved Hub device keypair");
+  return bundle;
 }
 
 /**
@@ -106,7 +139,7 @@ export function loadOrCreateHubDeviceKeyPair(
  * Returns base64 — the encoding `paseo_hub_gateway._verify_hello` expects.
  */
 export function signHubHello(secretKeyB64: string, payload: string): string {
-  const signature = cryptoSign(null, Buffer.from(payload, "utf8"), {
+  const signature = sign(null, Buffer.from(payload, "utf8"), {
     key: Buffer.from(secretKeyB64, "base64"),
     format: "der",
     type: "pkcs8",

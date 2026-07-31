@@ -269,6 +269,19 @@ export const PersistedConfigSchema = z
           })
           .strict()
           .optional(),
+        hub: z
+          .object({
+            enabled: z.boolean().optional(),
+            url: z.url().optional(),
+            deviceId: z.string().min(1).optional(),
+            token: z.string().min(1).optional(),
+            // ginit REST base URL + cached user token, captured at enrollment so
+            // daemon-side account APIs (device list) can be proxied for clients.
+            ginitBaseUrl: z.string().optional(),
+            ginitToken: z.string().optional(),
+          })
+          .strict()
+          .optional(),
         serviceProxy: z
           .object({
             // COMPAT(serviceProxyEnabled): added 2026-06-02, remove after 2026-12-02.
@@ -281,19 +294,6 @@ export const PersistedConfigSchema = z
           .strict()
           .optional(),
         auth: DaemonAuthSchema.optional(),
-        hub: z
-          .object({
-            enabled: z.boolean().optional(),
-            url: z.string().optional(),
-            deviceId: z.string().optional(),
-            token: z.string().optional(),
-            // ginit REST base URL + cached user token, captured at enrollment so
-            // daemon-side account APIs (device list) can be proxied for clients.
-            ginitBaseUrl: z.string().optional(),
-            ginitToken: z.string().optional(),
-          })
-          .strict()
-          .optional(),
       })
       .strict()
       .transform(({ allowedHosts, ...daemon }) => {

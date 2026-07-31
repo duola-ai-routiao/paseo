@@ -9,6 +9,8 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import type { Logger } from "pino";
 import { z } from "zod";
 import { createBranchChangeRouteHandler } from "./script-route-branch-handler.js";
+import { PaseoHubConnector } from "./hub/connector.js";
+import { loadOrCreateHubDeviceKeyPair } from "./hub/device-keypair.js";
 
 export type ListenTarget =
   | { type: "tcp"; host: string; port: number }
@@ -403,6 +405,12 @@ export interface PaseoDaemonConfig {
   relayPublicEndpoint?: string;
   relayUseTls?: boolean;
   relayPublicUseTls?: boolean;
+  hub?: {
+    enabled: boolean;
+    url: string;
+    deviceId: string;
+    token: string;
+  };
   serviceProxy?: {
     publicBaseUrl: string | null;
     standaloneListen: string | null;
@@ -558,6 +566,7 @@ export async function createPaseoDaemon(
 
   const serverId = getOrCreateServerId(config.paseoHome, { logger });
   const daemonKeyPair = await loadOrCreateDaemonKeyPair(config.paseoHome, logger);
+  const hubDeviceKeyPair = loadOrCreateHubDeviceKeyPair(config.paseoHome, logger);
   const managedProcesses = createBootstrapManagedProcessRegistry(config, logger);
   // Reconcile the helper-process ledger in the background so it never blocks the
   // daemon from coming up; terminating a live leftover can take a few seconds.
@@ -566,6 +575,9 @@ export async function createPaseoDaemon(
     logger.warn({ err: error }, "Failed to reconcile managed helper process ledger");
   });
   let relayTransport: RelayTransportController | null = null;
+  let hubConnector: PaseoHubConnector | null = null;
+  let hubConfigPoller: ReturnType<typeof setInterval> | null = null;
+  let activeHubConfigKey = "";
 
   const staticDir = config.staticDir;
   const downloadTokenTtlMs = config.downloadTokenTtlMs ?? 60000;
@@ -1110,7 +1122,7 @@ export async function createPaseoDaemon(
 
   // Connects the daemon to the ginit Hub over WebSocket once enrolled; this
   // is what makes the daemon (and its running services) visible on the hub.
-  const hubConnector = new HubConnector({
+  const ginitHubConnector = new HubConnector({
     paseoHome: config.paseoHome,
     logger,
     workspaceSnapshotProvider: () =>
@@ -1135,7 +1147,7 @@ export async function createPaseoDaemon(
           }
         : null,
   });
-  const pushHubWorkspaceSnapshot = () => hubConnector.pushWorkspaceSnapshot();
+  const pushHubWorkspaceSnapshot = () => ginitHubConnector.pushWorkspaceSnapshot();
   // Keep the hub's view of running services fresh as agents come and go.
   // Coalesce bursts (stream events) into one snapshot push per tick.
   let hubSnapshotPushQueued = false;
@@ -1155,7 +1167,7 @@ export async function createPaseoDaemon(
   const hubGinitEnroller = new GinitHubEnroller({
     paseoHome: config.paseoHome,
     logger,
-    onHubConfigPersisted: () => hubConnector.connect(),
+    onHubConfigPersisted: () => ginitHubConnector.connect(),
   });
 
   const loopService = new LoopService({
@@ -1614,7 +1626,49 @@ export async function createPaseoDaemon(
               hubGinitEnroller,
             );
             await hubRelationships.start();
-            hubConnector.start();
+            ginitHubConnector.start();
+
+            const syncHubConnector = async () => {
+              const persistedHub = loadPersistedConfig(config.paseoHome, logger).daemon?.hub;
+              const nextHub =
+                persistedHub?.enabled &&
+                persistedHub.url &&
+                persistedHub.deviceId &&
+                persistedHub.token
+                  ? {
+                      enabled: true,
+                      url: persistedHub.url,
+                      deviceId: persistedHub.deviceId,
+                      token: persistedHub.token,
+                    }
+                  : undefined;
+              const nextKey = nextHub
+                ? `${nextHub.url}\n${nextHub.deviceId}\n${nextHub.token}`
+                : "";
+              if (nextKey === activeHubConfigKey) return;
+              await hubConnector?.stop();
+              hubConnector = null;
+              activeHubConfigKey = nextKey;
+              if (!nextHub) return;
+              hubConnector = new PaseoHubConnector({
+                logger,
+                config: nextHub,
+                daemonId: serverId,
+                publicKey: hubDeviceKeyPair.publicKeyB64,
+                signCanonical: hubDeviceKeyPair.signCanonical,
+                workspaceRegistry,
+                providerSnapshotManager,
+                agentManager,
+                agentStorage,
+              });
+              hubConnector.start();
+            };
+            await syncHubConnector();
+            hubConfigPoller = setInterval(() => {
+              void syncHubConnector().catch((error) =>
+                logger.warn({ err: error }, "Failed to refresh Hub connector configuration"),
+              );
+            }, 2_000);
 
             if (relayEnabled) {
               const offer = await createConnectionOfferV2({
@@ -1676,8 +1730,11 @@ export async function createPaseoDaemon(
 
   const stop = async () => {
     await hubRelationships.stop();
-    hubConnector.stop();
+    ginitHubConnector.stop();
     workspaceReconciliation.dispose();
+    if (hubConfigPoller) clearInterval(hubConfigPoller);
+    hubConfigPoller = null;
+    await hubConnector?.stop();
     scriptHealthMonitor.stop();
     clearInterval(idleAgentCollectionTimer);
     await inFlightIdleAgentCollection;

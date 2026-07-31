@@ -7,6 +7,7 @@ import { runSetPasswordCommand } from "./set-password.js";
 import { pairCommand } from "./pair.js";
 import { withOutput } from "../../output/index.js";
 import { addJsonOption } from "../../utils/command-options.js";
+import { createHubCommand } from "./hub.js";
 
 function resolveHostnamesOption(hostnames: unknown, allowedHosts: unknown): string | undefined {
   if (typeof hostnames === "string") return hostnames;
@@ -19,6 +20,7 @@ export function createDaemonCommand(): Command {
 
   daemon.addCommand(startCommand());
   daemon.addCommand(pairCommand());
+  daemon.addCommand(createHubCommand());
 
   addJsonOption(daemon.command("status").description("Show local daemon status"))
     .option("--home <path>", "Paseo home directory (default: ~/.paseo)")

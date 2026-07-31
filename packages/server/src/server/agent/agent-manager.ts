@@ -45,7 +45,7 @@ import {
 } from "./agent-sdk-types.js";
 import { buildArchivedAgentRecord, type ArchivedStoredAgentRecord } from "./agent-archive.js";
 import type { StoredAgentRecord, AgentStorage } from "./agent-storage.js";
-import type { AgentOwner } from "./agent-owner.js";
+import type { AgentOwner, DaemonAgentOwner } from "./agent-owner.js";
 import {
   InMemoryAgentTimelineStore,
   type SeedAgentTimelineOptions,
@@ -1683,6 +1683,44 @@ export class AgentManager {
   async setLabels(agentId: string, labels: Record<string, string>): Promise<void> {
     const agent = this.requireAgent(agentId);
     await this.writeLabels(agent.id, labels);
+  }
+
+  async claimDaemonExecution(agentId: string, owner: DaemonAgentOwner): Promise<void> {
+    const agent = this.requireAgent(agentId);
+    if (agent.owner || agent.labels["ginit.execution_id"]) {
+      throw new Error("agent is already owned by another daemon execution");
+    }
+    agent.owner = owner;
+    agent.labels = applyLabelPatch(agent.labels, {
+      "ginit.execution_id": owner.executionId,
+      "ginit.remote": "true",
+    });
+    this.touchUpdatedAt(agent);
+    await this.persistSnapshot(agent);
+    this.emitState(agent, { persist: false });
+  }
+
+  async releaseDaemonExecution(agentId: string, owner: DaemonAgentOwner): Promise<void> {
+    const agent = this.requireAgent(agentId);
+    if (
+      !agent.owner ||
+      agent.owner.kind !== "daemon" ||
+      agent.owner.daemonId !== owner.daemonId ||
+      agent.owner.executionId !== owner.executionId
+    ) {
+      throw new Error("agent is not owned by this daemon execution");
+    }
+    if (this.hasInFlightRun(agentId)) {
+      throw new Error("agent is already running");
+    }
+    agent.owner = undefined;
+    agent.labels = applyLabelPatch(agent.labels, {
+      "ginit.execution_id": null,
+      "ginit.remote": null,
+    });
+    this.touchUpdatedAt(agent);
+    await this.persistSnapshot(agent);
+    this.emitState(agent, { persist: false });
   }
 
   private async writeLabels(agentId: string, patch: AgentLabelPatch): Promise<WriteLabelsResult> {
