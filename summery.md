@@ -700,3 +700,23 @@ E2E 使用全新隔离 Chromium context。为了复用用户已完成的飞书�
 1. 结论：这不是 CLI/OAuth 接口权限（scope）问题，而是**应用可用范围（availability scope）未覆盖蔡晓杰**——「王少敬的飞书 CLI」（`cli_aacb827247389bde`）是王少敬个人创建的自建应用，可用范围未包含蔡晓杰所在部门/成员，或改动后未发布新版本并过企业管理员审核。QW.md 中 2026-07-28 已记录同类问题（当时从 `cli_a969…` 换到 aacb）。
 2. 解决方法（无需加任何接口权限）：王少敬在 open.feishu.cn 开发者后台 → 该应用 → 版本管理与发布 → 创建版本，把可用范围设为「全部员工」或在「部分员工」中加入蔡晓杰/GAIR 相关部门，提交后由企业管理员在管理后台审核通过即可；管理员也可直接在管理后台 → 应用管理中调整可用范围。临时方案：授权页点「使用其他账号登录」换王少敬本人账号。
 3. 已将 QW 配对记录追加到 QW.md，commit c528099c7 已推送远程。
+
+---
+
+## 2026-08-05 补充：部署命令写入文档
+
+**用户需求 query**：我如何部署？能给出具体的命令么？上面的内容写入 md 文档。
+
+**最终内容总结**：
+
+1. 给出两条部署路线的具体命令：路线 A（仓库代码直跑，ginit 同款，cd /home/alan/paseo 后 npm install + npm run build:server，再用 PASEO_HOME/PASEO_LISTEN 环境变量通过 npx tsx supervisor-entrypoint.ts 或 packages/cli/bin/paseo daemon start 启动）；路线 B（npm 全局安装官方版，paseo daemon start）。
+2. 对比两条路线差异：路线 A 让当前分支 ginit/hub 改动实时生效，路线 B 是官方 0.2.3 纯净版；提醒 stop 前确认无重要任务。
+3. 内容已写入《本地部署方式.md》第八节，格式化与 typecheck 通过，已 commit（0cc38fe81）并 push 到远程。
+
+---
+
+## 2026-08-05：npm 本地代码全局安装脚本 + GitHub 分发方案
+
+**用户需求**：① 「npm 如何安装本地代码，帮我写一个脚本」② 追加「npm 打包也可以帮我上传到 github 么？」
+
+**内容总结**：新写 `scripts/paseo-install-local.sh`，实现「把当前仓库源码以 npm 全局安装形态装到系统」。核心思路：workspace 里 @getpaseo/_ 互相依赖且 registry 上只有旧版 0.2.3，不能直接 `npm i -g` 仓库目录；脚本先 `npm pack` 出 6 个 workspace 包（highlight/relay/protocol/client/server/cli），把各包 package.json 里的 @getpaseo/_ 依赖重写成 `file:<tarball 路径>`，再用 `--ignore-scripts` 二次打包成自包含 tarball，最后 `npm install -g` cli 的 tarball。已端到端干跑验证：真实全局安装成功（`npm root -g` 下 @getpaseo/cli@0.2.0），`paseo daemon status` 正常（Local Daemon running / Connected Daemon reachable，版本 0.2.0），运行中的 supervisor（PID 2565738）未受影响。关于「上传到 GitHub」：本机无 `gh` CLI，不能直接代传 release，但脚本的 `--release-dir DIR` 参数可产出可分发目录（6 个 tarball + install.sh，依赖全部 `file:./` 相对路径），已验证从任意目录执行 install.sh 能成功全局安装；该目录可整体拷到其它机器，或手动作为 GitHub Release assets 上传。遗留：若要我直接传到 GitHub Release，需先装 gh（`sudo apt install gh`）并完成 `gh auth login`。
