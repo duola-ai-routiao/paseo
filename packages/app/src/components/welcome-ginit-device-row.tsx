@@ -32,6 +32,17 @@ export function WelcomeGinitDeviceRow({
     void onConnect(device);
   }, [device, onConnect]);
 
+  // Explain why the button is disabled — otherwise users see a grey button
+  // with no idea what to do. The hint lands on `title` (web) and
+  // `accessibilityHint` (native), so it shows on hover/screen-reader.
+  let disabledReason: string | null = null;
+  if (device.status !== "online") {
+    disabledReason = "Host is offline — start the daemon on that machine, then Refresh.";
+  } else if (device.connectionReady !== true || !device.relayEndpoint || !device.relayPublicKey) {
+    disabledReason =
+      "Host is missing Relay metadata — update the daemon on that machine, then Refresh.";
+  }
+
   return (
     <View style={styles.deviceRow}>
       <View style={styles.deviceInfo}>
@@ -48,6 +59,7 @@ export function WelcomeGinitDeviceRow({
         onPress={handlePress}
         disabled={!canConnect}
         testID={`welcome-ginit-connect-${device.deviceId}`}
+        {...(disabledReason ? { title: disabledReason, accessibilityHint: disabledReason } : {})}
       >
         Connect
       </Button>

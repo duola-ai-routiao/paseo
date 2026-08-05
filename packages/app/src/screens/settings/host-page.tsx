@@ -715,6 +715,18 @@ function GinitDeviceRow(props: {
     applyLabel = "Adding...";
   }
 
+  // Explain why Connect is disabled — otherwise users see a grey button with
+  // no idea what to do. Mirrors the welcome-screen gating logic.
+  let disabledReason: string | null = null;
+  if (!canApply) {
+    if (device.status !== "online") {
+      disabledReason = "Host is offline — start the daemon on that machine, then Refresh.";
+    } else if (device.connectionReady !== true || !device.relayEndpoint || !device.relayPublicKey) {
+      disabledReason =
+        "Host is missing Relay metadata — update the daemon on that machine, then Refresh.";
+    }
+  }
+
   return (
     <View style={ginitHubStyles.deviceRow}>
       <View style={ginitHubStyles.deviceInfo}>
@@ -732,6 +744,7 @@ function GinitDeviceRow(props: {
         onPress={handlePress}
         disabled={!canApply || isApplying || isApplied}
         testID={`ginit-hub-apply-${device.deviceId}`}
+        {...(disabledReason ? { title: disabledReason, accessibilityHint: disabledReason } : {})}
       >
         {applyLabel}
       </Button>

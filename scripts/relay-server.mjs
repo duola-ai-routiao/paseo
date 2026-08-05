@@ -228,7 +228,14 @@ class RelaySession {
       ws,
       () => {
         set.delete(ws);
-        if (set.size === 0) this.clients.delete(connectionId);
+        if (set.size > 0) return;
+        this.clients.delete(connectionId);
+        this.pendingFrames.delete(connectionId);
+        this.closeAllIn(
+          this.serverData.get(connectionId) ?? new Set(),
+          1001,
+          "Client disconnected",
+        );
         this.notifyControls({ type: "disconnected", connectionId });
       },
       `client ${connectionId}`,
