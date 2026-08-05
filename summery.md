@@ -626,3 +626,29 @@ E2E 使用全新隔离 Chromium context。为了复用用户已完成的飞书�
 ✅ 修复：本地跑通 test_cors 等 5 个测试文件（57 个测试全绿）后，用 `scripts/testbed/sync-server.sh` 把 `feat-paseo` 部署到 testbed 并重启 ginit.service。
 ✅ 验证：preflight 204 + 正确反射 allowlist origin、恶意 origin 无 CORS 头；Playwright 在 8236 页面内 fetch device/start 返回 200 并拿到 verification_uri（正确指向 8235）；欢迎页设备列表正常渲染、online 设备可 Connect。
 ⚠️ 遗留：feat-paseo（13 commits）需开 PR 合 main，prod 才能经 git-based 部署获得修复；真实飞书账号授权跳转需人工过一遍。
+
+---
+
+## 2026-08-05 推送分支到远程
+
+**用户需求 query**：帮我把代码推到远程
+
+**最终内容总结**：
+✅ 工作区干净（三个改动文件已包含在 60af3f5c5 中），无未提交内容。
+✅ gair（GAIR-NLP/paseo）远程已是最新，无需推送。
+✅ 补推到 origin（duola-ai-routiao/paseo）：分支 feat_ginit_connect_20260730 首次推送到 origin 成功。
+🔗 PR 创建链接：https://github.com/duola-ai-routiao/paseo/pull/new/feat_ginit_connect_20260730
+
+---
+
+## 2026-08-05 修复 8236 网页 Connect 按钮灰色不可点
+
+**用户需求 query**：http://150.5.173.43:8236/welcome 页面的 Connect 按钮无法点击，这个是什么问题，怎么修复？后续要求：「是否有办法帮我启动本地的连接」「两个都启动」「继续」
+
+**最终内容总结**：
+✅ 根因：`welcome-ginit-device-row.tsx` 的 `canConnect` 要求 `status==="online" && connectionReady && relayEndpoint && relayPublicKey` 全部满足；设备显示 offline 因为对应 daemon 进程没启动（本机只有 docker 容器 srv_nvcX 在线，`~/.paseo` 和 `.dev/paseo-home-deploy` 两个 daemon 都没跑）。这是设计内行为（架构文档明确「offline 机器显示但不能连接」）。
+✅ UX 改进：在按钮加 `disabledReason`，通过 `title`（web hover）和 `accessibilityHint`（native）展示「Host is offline — start the daemon on that machine, then Refresh.」等原因；同步加到设置页 `GinitDeviceRow`。typecheck/lint 全过。
+✅ 重新部署 Web bundle 到 testbed：新 bundle `index-f8b0a9e...js` scp 到 testbed，docker cp 进 paseo-web 容器，sed 替换 index.html 引用，md5 验证一致，无需重启容器。
+✅ 启动本机两个 daemon（`npm run cli -- daemon start --listen 127.0.0.1:6767/6769 --home ...`）。踩三个坑：① 默认连 prod ginit.opensii.ai 而非 testbed；② 改 url 后报 4401 invalid device token（prod 和 testbed 是两套 DB）；③ 重发 token 后报 4403 invalid device signature——根因是 `loadOrCreateHubDeviceKeyPair` 会从公钥 SHA256 派生 deviceId，跟 hub DB 里手工 UPDATE 的 device_id 不一致。
+✅ 修复：在 testbed DB 直接把 `paseo_devices.device_id` 改成派生值（同步更新 `paseo_enrollments` 外键），本机 config 也改回派生值。三台设备全部 online，8236 网页 Refresh 后 Connect 全部可点，点 `paseo-alan-MS-7D99` 的 Connect 成功跳转 `/open-project` 完成 Relay E2EE 连接。
+⚠️ 遗留：bootstrap.ts 同时实例化了 `PaseoHubConnector`（connector.ts，老）和 `HubConnector`（hub-connector.ts，新），两者用相同 deviceId 向同一 hub 发 hello 导致每 2s 一次 `superseded connection` 日志；功能不受影响但浪费连接。这是 4382975b7 合并 gair/main 时留下的双 connector 并存 bug，需选其中一个保留，超出本次范围。

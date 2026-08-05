@@ -720,3 +720,26 @@ W: testbed 的 /opt/ginit/ginit 是旧版（无 paseo_hub.py/paseo_hub_gateway.p
 4. **附注**：`verification_uri` 现在正确指向 8235（`40726c4` 的 bare-IP 修复一并部署生效）；新 migrations `0020_paseo_relay_metadata.sql`、`0102_paseo_relay_public_key.sql` 首次同步到 testbed，boot 时幂等 apply 无副作用；deploy 前已备份旧 `server.py` 到 testbed `/tmp/server.py.pre-cors-deploy`。
 
 **遗留**：① `feat-paseo` 13 个 commit 尚未合入 main（testbed 是 rsync 部署、prod bandwagon 是 git-based 从 origin/main 拉取，prod 要拿到这些改动必须先开 PR 合 main）；② 真实飞书账号授权跳转（点按钮 → 飞书授权页 → 回调）需真实账号人工完成，本次以缓存 token + 浏览器内真实 fetch 验证全链路 CORS；③ testbed `/opt/ginit-src` 停在 7-13 的旧 main，下次有人从 ginit-src 部署会覆盖回无 CORS 代码——根治靠 feat-paseo 合 main。
+
+## 2026-08-05 - 8236 网页 Connect 按钮灰色不可点（offline 设备 + 本地 daemon 未启动）
+
+**Q（问题）**：`http://150.5.173.43:8236/welcome` 设备列表里 `paseo-alan-MS-7D99` 和 `paseo-srv_V_6a` 显示 `offline`，对应的 Connect 按钮 `<button aria-disabled="true" disabled ...>` 完全无法点击，用户无法接入本机 daemon。
+
+**W（解决方法）**：
+
+1. **根因诊断**：按钮禁用是 [welcome-ginit-device-row.tsx](packages/app/src/components/welcome-ginit-device-row.tsx) 的 `canConnect` 判为 false，条件是 `device.status === "online" && device.connectionReady === true && relayEndpoint && relayPublicKey` 四条全满足。设备显示 offline 是因为对应 daemon 进程没在跑——本机只有 docker 容器 `paseo`（srv_nvcX，8234）在线；`~/.paseo`（srv_MxTC，对应 6767）和 `.dev/paseo-home-deploy`（srv_V_6a，对应 6769）两个 daemon 都没启动。这是**设计内行为**：`docs/ginit-paseo-complete-architecture.md` 明确写「offline 机器显示但不能连接」。
+2. **UX 改进（commit 内容）**：原 UI 只把按钮变灰但不告诉用户为什么，加一个 `disabledReason` 通过 `title`（web hover tooltip）和 `accessibilityHint`（native 屏幕阅读器）展示原因：offline 提示「Host is offline — start the daemon on that machine, then Refresh.」；缺 Relay metadata 提示「Host is missing Relay metadata — update the daemon on that machine, then Refresh.」。同步在 settings/host-page.tsx 的 `GinitDeviceRow` 加同样的 hint。
+3. **重新发布 Web bundle**：`npm run build:daemon-web-ui` 出新 bundle `index-f8b0a9e78456c6a17732ab057581ed8a.js`；scp 到 testbed `/tmp/` → `docker cp` 进 paseo-web 容器 → 备份旧 `index.html` → sed 替换 bundle 引用 → 验证 md5 一致。无需重启容器（静态文件热替换）。
+4. **启动本机 daemon**：用户选择「两个都启动」。先 `npm run cli -- daemon start --listen 127.0.0.1:6767 --home /home/alan/.paseo` 和 `...:6769 --home .dev/paseo-home-deploy`，结果两 daemon 都连到 **prod** `wss://ginit.opensii.ai/ws/v1/paseo`（config 里的旧 url），而设备列表看的是 testbed `150.5.173.43:8235`，所以 testbed DB 仍 offline。
+5. **切回 testbed 报 4401 invalid device token**：直接把 config `hub.url` 改成 `ws://150.5.173.43:8235/ws/v1/paseo` 后，daemon 用原 prod token 向 testbed 认证失败——prod 和 testbed 是两套独立 DB，token 不通用。
+6. **重发 device token**：参考 QW.md 2026-07-29 的恢复套路，在 testbed 用 `GINIT_TOKEN_SECRET` HMAC-SHA256 签发新 `pht_*` token，UPDATE `paseo_devices.token_hash` + `token_prefix`，把明文 token 写回本机 config。结果又报 **4403 invalid device signature**。
+7. **deviceId 派生机制才是 signature 失败的根因**：daemon 端的 `loadOrCreateHubDeviceKeyPair` 会**从公钥 SHA256 派生 deviceId**（`deviceIdForPublicKey`），所以 hello 里送的 deviceId 永远是这个派生值（`90a19deb-...` / `fb48407f-...`），而不是 hub DB 里手工 UPDATE 的 `9be2d480-...` / `25de4b8b-...`。验签失败的原因不是密钥错，而是 **device_id 不匹配**。修复：在 testbed DB 直接 UPDATE `paseo_devices.device_id` 为派生值，同时更新 `paseo_enrollments.device_id` 外键，本机 config 也改回派生值。
+8. **最终状态**：testbed DB 三台设备全 `online`，8236 网页 Refresh 后三台 Connect 按钮全部可点，点击 `paseo-alan-MS-7D99` 的 Connect 成功跳转 `/open-project` 完成 Relay E2EE 连接。
+
+**踩坑记录**：
+
+- 改 `hub-device-keypair.json` 的 `deviceId` 字段**无效**——daemon 加载时会从公钥重新派生并覆盖。
+- `paseo_devices.device_id` 是主键，改它要同步 `paseo_enrollments.device_id`。
+- prod 和 testbed 是两套独立的 Hub（ginit.opensii.ai vs 150.5.173.43），token/device_id 完全不通用。
+
+**遗留**：bootstrap.ts 里**同时**实例化了 `PaseoHubConnector`（connector.ts，老的）和 `HubConnector`（hub-connector.ts，新的 ginit 分支），两者都用相同 deviceId 向同一 hub 发 hello，导致 hub registry 不停踢掉旧的——daemon 日志每 2s 一条 `code=4409 reason="superseded connection"`。功能不受影响（每台设备始终有一条 active 连接、Hub DB 保持 online），但浪费了连接且刷日志。这是 4382975b7 合并 gair/main 时留下的双 connector 并存 bug，需要选其中一个保留，超出本次修复范围。
