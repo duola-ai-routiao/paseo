@@ -652,3 +652,28 @@ E2E 使用全新隔离 Chromium context。为了复用用户已完成的飞书�
 ✅ 启动本机两个 daemon（`npm run cli -- daemon start --listen 127.0.0.1:6767/6769 --home ...`）。踩三个坑：① 默认连 prod ginit.opensii.ai 而非 testbed；② 改 url 后报 4401 invalid device token（prod 和 testbed 是两套 DB）；③ 重发 token 后报 4403 invalid device signature——根因是 `loadOrCreateHubDeviceKeyPair` 会从公钥 SHA256 派生 deviceId，跟 hub DB 里手工 UPDATE 的 device_id 不一致。
 ✅ 修复：在 testbed DB 直接把 `paseo_devices.device_id` 改成派生值（同步更新 `paseo_enrollments` 外键），本机 config 也改回派生值。三台设备全部 online，8236 网页 Refresh 后 Connect 全部可点，点 `paseo-alan-MS-7D99` 的 Connect 成功跳转 `/open-project` 完成 Relay E2EE 连接。
 ⚠️ 遗留：bootstrap.ts 同时实例化了 `PaseoHubConnector`（connector.ts，老）和 `HubConnector`（hub-connector.ts，新），两者用相同 deviceId 向同一 hub 发 hello 导致每 2s 一次 `superseded connection` 日志；功能不受影响但浪费连接。这是 4382975b7 合并 gair/main 时留下的双 connector 并存 bug，需选其中一个保留，超出本次范围。
+
+---
+
+## 2026-08-05 本地部署方式文档整理
+
+**用户需求 query**：本地机器需要部署什么服务，本地机器的 6767 端口是否部署了服务，是使用什么部署的；本地会多久和远程同步一次（Paseo Supervisor）；本地 6767 端口应该如何部署；帮我总结到一个 md 文档，名字为 本地部署方式.md。
+
+**最终内容总结**：
+
+1. 排查确认本机 6767 端口已部署 Paseo Daemon 服务，部署方式为 nvm Node 24 直接运行 `/home/alan/paseo` 仓库代码，由 Paseo Supervisor 进程托管（非 systemd/Docker），健康检查返回 ok；同机还有 6769 端口的第二个 daemon 实例和 Docker 容器化实例（映射 8234 端口）。
+2. 查明 Supervisor 不做远程同步，仅有 1 秒 IPC 心跳和 30 秒 PID 锁心跳两个本地计时器；远程访问由 daemon 通过 relay E2E 加密长连接实时推送。
+3. 梳理了官方标准部署方式：`npm i -g @getpaseo/server @getpaseo/cli` 后 `paseo daemon start` 即可，自带 Supervisor 守护、日志轮转、PID 锁、崩溃自愈，无需第三方进程管理器；另附可选的 user-level systemd 开机自启配置。
+4. 已将全部内容整理为《本地部署方式.md》并 commit、push 到远程分支 feat_ginit_connect_20260730。
+
+---
+
+## 2026-08-05 补充：6767 daemon 代码来源排查
+
+**用户需求 query**：本地安装的版本，是使用代码安装还是 npm install -g @getpaseo/server @getpaseo/cli？我是否修改过？写入 md 文件。
+
+**最终内容总结**：
+
+1. 排查确认 6767 端口运行的 daemon 用的是 `/home/alan/paseo` 仓库工作区代码（tsx 直跑源码，版本 0.2.0），而非 npm 全局安装的 @getpaseo/cli@0.2.3（2026-07-29 装，处于闲置状态）；启动者是 ginit 编排（GINIT_PASEO_PATH 指向仓库 bin）。
+2. 确认本分支 feat_ginit_connect_20260730 相对 main 有 171 个文件改动（ginit/hub 接入功能），但 Supervisor/daemon 启动链路零改动；因工作区代码直跑，所有分支改动都在运行中的 daemon 里生效。
+3. 已将结论补充进《本地部署方式.md》第六、七节，格式化与 typecheck 通过，已 commit（f4a02a053）并 push 到远程。
