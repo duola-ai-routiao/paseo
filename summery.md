@@ -613,3 +613,16 @@ E2E 使用全新隔离 Chromium context。为了复用用户已完成的飞书�
 - 派生修复：persisted-config.ts 两个重复 hub schema 合并为一个（含 ginitBaseUrl/ginitToken）；bootstrap.ts 中 ginit 的 HubConnector 改名 ginitHubConnector，与 gair/main 的 PaseoHubConnector（配置轮询管理）共存。
 - 验证：build:server、全量 typecheck、lint 全绿；hub+config 6 个测试文件 41 个测试全部通过。注意坑：本机 ~/.bashrc 里 GINIT_PASEO_HUB_WS_PORT=8235 会让 ginit-enroller 测试拿到带端口的 hubUrl 而失败，测试时需 env -u 屏蔽。
 - 合并提交 4382975b7 已推送至 gair（GAIR-NLP/paseo）。
+
+---
+
+## 2026-08-05 飞书登录修复（8236 CORS）
+
+**用户需求 query**：当前 http://150.5.173.43:8236/welcome login with 飞书总是失败。使用 playwright 测试然后修复。
+
+**最终内容总结**：
+✅ Playwright 复现：点击 Login with Feishu 后浏览器对 `150.5.173.43:8090/auth/device/start` 的 CORS preflight 被 ginit-server 以 501 拒绝（无 OPTIONS 处理、无 Access-Control-Allow-Origin），页面显示 "Failed to fetch"。
+✅ 根因：CORS 实现（ginit commit `50e2afa`，在 `feat-paseo` 分支）从未部署到 testbed；`/etc/ginit.env` 的 `GINIT_CORS_ALLOWED_ORIGINS` 配了但运行的代码不认。
+✅ 修复：本地跑通 test_cors 等 5 个测试文件（57 个测试全绿）后，用 `scripts/testbed/sync-server.sh` 把 `feat-paseo` 部署到 testbed 并重启 ginit.service。
+✅ 验证：preflight 204 + 正确反射 allowlist origin、恶意 origin 无 CORS 头；Playwright 在 8236 页面内 fetch device/start 返回 200 并拿到 verification_uri（正确指向 8235）；欢迎页设备列表正常渲染、online 设备可 Connect。
+⚠️ 遗留：feat-paseo（13 commits）需开 PR 合 main，prod 才能经 git-based 部署获得修复；真实飞书账号授权跳转需人工过一遍。

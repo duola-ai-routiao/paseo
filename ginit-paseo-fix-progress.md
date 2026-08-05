@@ -57,9 +57,11 @@
 - 1-31：完成首轮身份边界、设备 metadata、设置页 Relay/TOFU 修复并推送
 - 32-40：复核欢迎页 Relay 改动边界并重新阅读进度文件
 - 41：移除远程 paseo-web 的 `PASEO_PASSWORD`，Welcome 部署页保留飞书登录入口；补齐欢迎页 Relay metadata 和连接按钮，完成构建与免密 Playwright 验证
+- 42：修复 8236 飞书登录 CORS 失败——根因是 ginit `feat-paseo` 分支的 CORS 实现（50e2afa）从未部署到 testbed 8090；本地 5 个测试文件全绿后 `sync-server.sh` 部署重启，curl + Playwright 双向验证 preflight 204/device start 200/设备列表渲染
 
 ## 待验证
 
-- 真实飞书授权确认后设备列表加载
+- 真实飞书授权确认后设备列表加载（CORS 链路已通，只差真实账号跳转授权）
 - 点击设备 Connect 后真实浏览器 Relay E2EE/TOFU 落 HostProfile
 - 将远程无密码配置写入正式部署 compose，避免手工重建后丢失
+- feat-paseo（13 commits）开 PR 合 main——testbed 是 rsync 部署可先跑，prod git-based 部署必须等合入

@@ -707,3 +707,16 @@ W: testbed 的 /opt/ginit/ginit 是旧版（无 paseo_hub.py/paseo_hub_gateway.p
 **验证**：`npm run typecheck` 全 workspace 通过；`hub-connector.test.ts`（含新增签名校验用例，用 `cryptoVerify` 独立验签通过）、`messages.hub.test.ts`、`ginit-enroller.test.ts` 相关用例 43/43 通过（另 1 个 `hubUrl` 端口断言失败经 `git stash` 对照验证是预存问题，与本次改动无关）；定向 lint 0 警告。
 
 **遗留**：老 daemon 发送无公钥/无签名的旧式 relay 块时，Hub 侧必须忽略而不是与库存公钥拼接（该约束已写入文档，Hub 服务端实现在 ginit 仓库）；生产部署后需重建 B 端 Web bundle 并验证 8236 设备列表能拿到 `relay_public_key`。
+
+## 2026-08-05 - 8236 Paseo Web 飞书登录失败（CORS preflight 501）
+
+**Q（问题）**：`http://150.5.173.43:8236/welcome` 点「Login with Feishu」总是失败，页面显示 "Failed to fetch"。Playwright 复现发现浏览器对 `http://150.5.173.43:8090/auth/device/start` 的跨域请求被 CORS 拦截：OPTIONS preflight 返回 `501 Unsupported method ('OPTIONS')`，响应完全没有 `Access-Control-Allow-Origin` 头。同页加载时的 `GET /api/paseo/devices` 也因同样原因失败。
+
+**W（解决方法）**：
+
+1. **根因**：CORS 支持代码其实早已写好——ginit 仓库 commit `50e2afa feat(paseo): allow browser CORS for app and self-hosted UIs`（含 `do_OPTIONS`、allowlist 反射、私网/回环 origin 自动放行，带 `tests/test_cors.py` 6 个测试），`/etc/ginit.env` 里 `GINIT_CORS_ALLOWED_ORIGINS=http://150.5.173.43:8236,...` 也配置好了。但这批 paseo 相关 commit 只在 `feat-paseo` 分支（落后 main 106 个 commit，未 PR 合入），testbed `/opt/ginit` 跑的是旧代码 + 手工补丁，里面没有 CORS 实现。**环境变量配了但代码没部署，配置形同虚设。**
+2. **修复**：本机 `~/ginit/ginit` checkout 即 `feat-paseo` 分支且干净、与 origin 同步。先跑 `test_cors.py`（6/6）、`test_db_migrations`（23/23）、`test_paseo_hub`（4/4）、`test_feishu_user_auth`（18/18）、`test_context_postgres_api`（6/6）全绿，再用官方通道 `bash scripts/testbed/sync-server.sh` 全量 rsync 到 testbed 并重启 `ginit.service`。
+3. **验证**：① curl 从 testbed 本机对 8090 发 preflight：allowlist origin 返回 204 + `Access-Control-Allow-Origin: http://150.5.173.43:8236`；恶意 origin 只回 204 不带 CORS 头（fail-closed）；POST 带 Origin 正常回 200 + CORS 头。② Playwright 在 8236 页面上下文 fetch `8090/auth/device/start` 返回 200，拿到 `device_code` 和 `verification_uri`（`http://150.5.173.43:8235/auth/feishu/start?device_code=...`）。③ 欢迎页凭此前缓存的 token 成功调用 `/api/paseo/devices` 并渲染「My hosts」三台设备（`paseo-srv_nvcX` online 可 Connect）。
+4. **附注**：`verification_uri` 现在正确指向 8235（`40726c4` 的 bare-IP 修复一并部署生效）；新 migrations `0020_paseo_relay_metadata.sql`、`0102_paseo_relay_public_key.sql` 首次同步到 testbed，boot 时幂等 apply 无副作用；deploy 前已备份旧 `server.py` 到 testbed `/tmp/server.py.pre-cors-deploy`。
+
+**遗留**：① `feat-paseo` 13 个 commit 尚未合入 main（testbed 是 rsync 部署、prod bandwagon 是 git-based 从 origin/main 拉取，prod 要拿到这些改动必须先开 PR 合 main）；② 真实飞书账号授权跳转（点按钮 → 飞书授权页 → 回调）需真实账号人工完成，本次以缓存 token + 浏览器内真实 fetch 验证全链路 CORS；③ testbed `/opt/ginit-src` 停在 7-13 的旧 main，下次有人从 ginit-src 部署会覆盖回无 CORS 代码——根治靠 feat-paseo 合 main。
