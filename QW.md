@@ -743,3 +743,19 @@ W: testbed 的 /opt/ginit/ginit 是旧版（无 paseo_hub.py/paseo_hub_gateway.p
 - prod 和 testbed 是两套独立的 Hub（ginit.opensii.ai vs 150.5.173.43），token/device_id 完全不通用。
 
 **遗留**：bootstrap.ts 里**同时**实例化了 `PaseoHubConnector`（connector.ts，老的）和 `HubConnector`（hub-connector.ts，新的 ginit 分支），两者都用相同 deviceId 向同一 hub 发 hello，导致 hub registry 不停踢掉旧的——daemon 日志每 2s 一条 `code=4409 reason="superseded connection"`。功能不受影响（每台设备始终有一条 active 连接、Hub DB 保持 online），但浪费了连接且刷日志。这是 4382975b7 合并 gair/main 时留下的双 connector 并存 bug，需要选其中一个保留，超出本次修复范围。
+
+## 2026-08-05 - 飞书登录提示「你没有"王少敬的飞书 CLI"的使用权限」
+
+**Q（问题）**：用蔡晓杰（Generative AI Lab/GAIR 租户）账号登录飞书 SSO 时，授权页报错：「你没有"王少敬的飞书 CLI"的使用权限。当前登录账号为蔡晓杰(Generative AI Lab(GAIR))，下列账号均无权限」。此前（2026-07-28，见上文）该 SSO 应用已因 GAIR 租户不可用从 `cli_a969…` 换成 `cli_aacb827247389bde`（「王少敬的飞书 CLI」），现在又出现同类报错。
+
+**W（解决方法）**：这个报错**不是 OAuth scope/接口权限不够**，而是**应用可用范围（availability scope）没有覆盖蔡晓杰**——该 SSO 应用是王少敬个人账号创建的自建应用，可用范围大概率只配了「部分员工」且没把蔡晓杰加进去；或改动后未发布新版本/未被企业管理员审核通过。解决路径（无需改任何 CLI/接口权限）：
+
+1. 王少敬登录 [open.feishu.cn](https://open.feishu.cn) 开发者后台 → 进入「王少敬的飞书 CLI」应用（`cli_aacb827247389bde`）→ **应用发布 → 版本管理与发布 → 创建版本**。
+2. 创建版本时设置**可用范围**：选「全部员工」，或「部分员工」中按部门/成员把蔡晓杰（或 GAIR 相关部门/用户组）加进去。
+3. 提交发布后，**企业管理员**在飞书管理后台（feishu.cn/admin）→ 工作台 → 应用管理 → 应用审核中**审批通过**，新版本的可用范围才生效。
+4. 已发布的应用也可由管理员在管理后台 → 应用管理 → 选中该应用，直接调整可用范围。
+5. 临时绕过：授权页点「使用其他账号登录」，换用在可用范围内的账号（如王少敬本人）。
+
+**验证**：发布并审核通过后，蔡晓杰账号重新走 Login with Feishu 授权流，授权页不再出现「无权限」提示。
+
+**注意**：QW.md 已记录——SSO 应用（aacb）与 IM connector bot 应用（`cli_a969…`，凭据在 `/root/.lark-cli/config.json`）相互独立；上线生产必须换生产专用 SSO 应用，并确保其可用范围覆盖目标租户全员。
