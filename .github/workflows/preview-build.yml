@@ -1,0 +1,110 @@
+name: Preview Build
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: paseo-preview-build-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/gair-nlp/paseo
+  PORTAL_API: https://service.opensii.ai/preview/api
+
+jobs:
+  build:
+    runs-on: self-hosted
+    steps:
+      - name: Checkout requested ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve build metadata
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "ref=$(git symbolic-ref --short -q HEAD || git describe --tags --exact-match 2>/dev/null || git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          title="$(git log -1 --pretty=%s | head -c 200)"
+          {
+            echo 'title<<EOF'
+            printf '%s\n' "$title"
+            echo EOF
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build and push image
+        id: image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/base/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:${{ steps.meta.outputs.commit }}
+            ${{ env.IMAGE }}:preview-${{ github.run_id }}
+          provenance: false
+          sbom: false
+          cache-from: type=gha,scope=paseo-preview
+          cache-to: type=gha,scope=paseo-preview,mode=max
+
+      - name: Resolve image digest
+        id: image-digest
+        shell: bash
+        run: |
+          set -euo pipefail
+          digest="$(docker buildx imagetools inspect "${IMAGE}:${GITHUB_SHA}" --format '{{json .Manifest.Digest}}' | tr -d '"')"
+          printf 'Resolved digest: %s\n' "$digest"
+          test "${digest#sha256:}" != "$digest" || {
+            echo "Unable to resolve pushed image digest" >&2
+            exit 1
+          }
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Register digest with preview portal
+        env:
+          PORTAL_TOKEN: ${{ secrets.PREVIEW_PORTAL_TOKEN }}
+          DIGEST: ${{ steps.image-digest.outputs.digest }}
+          COMMIT: ${{ steps.meta.outputs.commit }}
+          BUILD_REF: ${{ steps.meta.outputs.ref }}
+          TITLE: ${{ steps.meta.outputs.title }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${PORTAL_TOKEN}" || {
+            echo "PREVIEW_PORTAL_TOKEN is required to register the image digest." >&2
+            exit 1
+          }
+          jq -n \
+            --arg digest "$DIGEST" \
+            --arg commit "$COMMIT" \
+            --arg build_ref "$BUILD_REF" \
+            --arg title "$TITLE" \
+            '{digest: $digest, channel: "test", commit: $commit, build_ref: $build_ref, title: $title}' \
+            > /tmp/record.json
+          curl --fail --silent --show-error --location \
+            -X POST "$PORTAL_API/artifacts/server-container/records" \
+            -H "Authorization: Bearer ${PORTAL_TOKEN}" \
+            -H 'Content-Type: application/json' \
+            --data-binary @/tmp/record.json
+
+      - name: Print image identity
+        run: |
+          echo "Image digest: ${{ steps.image.outputs.digest }}"
+          echo "Commit: ${{ steps.meta.outputs.commit }}"
