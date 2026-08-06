@@ -164,7 +164,7 @@ async function startGinitDeviceFlow(client: DaemonClient | null): Promise<{
   verificationUri: string;
   expiresIn: number;
 }> {
-  if (!isWeb) {
+  if (!isWeb || client) {
     if (!client) throw new Error("No Paseo host is connected yet.");
     return client.hubDeviceStart(ginitBaseUrl());
   }
@@ -187,7 +187,7 @@ async function pollGinitDeviceFlow(
   client: DaemonClient | null,
   deviceCode: string,
 ): Promise<{ status: "pending" | "completed"; token: string | null }> {
-  if (!isWeb) {
+  if (!isWeb || client) {
     if (!client) throw new Error("No Paseo host is connected yet.");
     return client.hubDevicePoll(ginitBaseUrl(), deviceCode);
   }
