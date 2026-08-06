@@ -136,6 +136,7 @@ async function resolveDaemonClient(
   }
   const probed = await probeAndUpsertDirectConnection({
     endpoint: window.location.host,
+    useTls: window.location.protocol === "https:",
     ...(password?.trim() ? { password: password.trim() } : {}),
   });
   return waitForRuntimeClient(probed.serverId);
@@ -288,9 +289,7 @@ export function GinitFeishuWelcome({ onConnected }: { onConnected?: (serverId: s
       setError(null);
       setNeedsPassword(false);
       try {
-        const client = isWeb
-          ? (findServingHostClient() ?? findConnectedClient())
-          : await resolveDaemonClient(probeAndUpsertDirectConnection, passwordOverride);
+        const client = await resolveDaemonClient(probeAndUpsertDirectConnection, passwordOverride);
         const start = await startGinitDeviceFlow(client);
         await openExternalUrl(start.verificationUri);
         const token = await pollForGinitToken(client, start.deviceCode, start.expiresIn);
@@ -321,9 +320,7 @@ export function GinitFeishuWelcome({ onConnected }: { onConnected?: (serverId: s
       if (!token) return;
       setState("loading");
       try {
-        const client = isWeb
-          ? (findServingHostClient() ?? findConnectedClient())
-          : await resolveDaemonClient(probeAndUpsertDirectConnection);
+        const client = await resolveDaemonClient(probeAndUpsertDirectConnection);
         await refreshDevices(token, client);
         setState("ready");
       } catch (cause) {
@@ -348,9 +345,7 @@ export function GinitFeishuWelcome({ onConnected }: { onConnected?: (serverId: s
       try {
         const token = await loadStoredToken();
         if (!token) throw new Error("Login with Feishu first");
-        const client = isWeb
-          ? (findServingHostClient() ?? findConnectedClient())
-          : await resolveDaemonClient(probeAndUpsertDirectConnection);
+        const client = await resolveDaemonClient(probeAndUpsertDirectConnection);
         await refreshDevices(token, client);
       } catch (cause) {
         setError(cause instanceof Error ? cause.message : String(cause));
