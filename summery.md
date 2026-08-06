@@ -726,3 +726,11 @@ E2E 使用全新隔离 Chromium context。为了复用用户已完成的飞书�
 **Query**：对比官网 paseo 的 github，本地改了什么内容？代码修改量级有多少？之后追问从用户体验功能维度对比（当前会自动导入所有 daemon，之前每个需单独上传）。
 
 **总结**：本地分支 `feat_ginit_connect_20260730` 相对官方 `upstream/main`（共同祖先 bb3f5c5）领先 63 个提交，其中约 20 个为实际代码，其余为文档。纯代码净增约 **+6,430 行 / −620 行**（46 个文件），另约 +3,500 行文档。核心改动是新增「ginit(飞书)账号 → WebSocket Hub 中继器 → 本地 daemon」连接链路，主要分布在 server/hub/\*（connector 656、ginit-enroller 405、hub-connector 342、device-keypair 148）、protocol/hub.ts(272)、app host-page 的 GinitHubSection(+463) 及若干部署脚本。用户体验维度：官方是逐台配对/上传模型，本地改为飞书登录一次自动发现并一键连接账号下所有 daemon（自动导入所有 daemon），并引入设备密钥对+TOFU 指纹、Hub 签名密钥与 relay E2EE 密钥分离等安全机制。已生成文档 docs/local-modifications-vs-official.md 并推送到 gair 远程。
+
+---
+
+## 2026-08-06：手机端（Android App）生成与移动端 ginit 链路改造
+
+**用户需求**：当前代码能否帮我重构生成手机端？——澄清后目标：生成可安装的 Android App，连接 ginit 远程 daemon 链路；采用本地构建方式；改造范围=链路+体验优化。
+
+**内容总结**：基于现有 Paseo Expo(SDK54/RN0.81) 工程生成可安装 Android APK，并打通手机端「飞书登录 → Ginit Hub 设备发现 → Relay E2EE 连接远程 ginit daemon」链路。关键改动：① `ginit-config.ts` 新增 native 端持久化 Hub baseUrl（AsyncStorage），web 保持注入；② `ginit-feishu-welcome.tsx` 欢迎页新增「Configure Hub URL」入口（native 专属），登录改为「优先直连 ginit HTTP、失败回退 daemon RPC」，native 不再强制本地 daemon；③ `welcome-ginit-device-row.tsx` 整行可点+触控态+命中区扩大。本机无 Android 工具链，安装 Adoptium JDK17 + Android SDK(platform-35/build-tools35/NDK/CMake)，`expo prebuild` + `gradlew assembleRelease` 单 ABI(arm64-v8a) 成功产出 APK（BUILD SUCCESSFUL 59m27s，105MB，`sh.paseo` 0.2.0）。typecheck/lint 全绿，apksigner/aapt 校验通过，APK 已在 `releases/paseo-0.2.0-arm64.apk`。遗留：无真机/模拟器做运行态飞书/Relay 验证（adb 无设备）；生产签名需正式 keystore。

@@ -1,9 +1,13 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { Text, TextInput, View } from "react-native";
-import { LogIn, RefreshCw } from "lucide-react-native";
+import { LogIn, RefreshCw, Save } from "lucide-react-native";
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import { Button } from "@/components/ui/button";
-import { getGinitBaseUrl, getInjectedGinitConfig } from "@/constants/ginit-config";
+import {
+  getNativeGinitBaseUrl,
+  setNativeGinitBaseUrl,
+  getInjectedGinitConfig,
+} from "@/constants/ginit-config";
 import { isWeb } from "@/constants/platform";
 import {
   getHostRuntimeStore,
@@ -15,7 +19,13 @@ import { openExternalUrl } from "@/utils/open-external-url";
 import { StyleSheet } from "react-native-unistyles";
 import { WelcomeGinitDeviceRow, type WelcomeHubDevice } from "./welcome-ginit-device-row";
 
-function ginitBaseUrl(): string {
+/**
+ * Resolves the Hub HTTP origin for the current runtime.
+ * - Web: the serving daemon's injected config (throws if missing).
+ * - Native: the account-configured base URL, or the default when unset.
+ * The caller passes the resolved value so async native storage is loaded once.
+ */
+function ginitBaseUrl(nativeBaseUrl: string | null): string {
   const configured = getInjectedGinitConfig()?.baseUrl;
   if (isWeb && typeof window !== "undefined") {
     if (!configured) {
@@ -23,11 +33,10 @@ function ginitBaseUrl(): string {
     }
     return configured;
   }
-  return configured ?? getGinitBaseUrl();
+  return nativeBaseUrl?.trim() || "https://ginit.opensii.ai";
 }
 
 const GINIT_TOKEN_STORAGE_KEY = "ginit.account.userToken";
-const RUNTIME_CLIENT_WAIT_MS = 15_000;
 
 async function loadStoredToken(): Promise<string | null> {
   try {
@@ -73,76 +82,9 @@ function findServingHostClient(): DaemonClient | null {
   return null;
 }
 
-async function waitForRuntimeClient(serverId: string): Promise<DaemonClient> {
-  const store = getHostRuntimeStore();
-  const immediate = store.getSnapshot(serverId);
-  if (immediate?.client && isHostRuntimeConnected(immediate)) {
-    return immediate.client;
-  }
-
-  return new Promise((resolve, reject) => {
-    let unsubscribe = () => {};
-    let timeout: ReturnType<typeof setTimeout> | null = null;
-    let settled = false;
-
-    const finish = (error: Error | null, client?: DaemonClient) => {
-      if (settled) return;
-      settled = true;
-      unsubscribe();
-      if (timeout) clearTimeout(timeout);
-      if (error) {
-        reject(error);
-      } else if (client) {
-        resolve(client);
-      } else {
-        reject(new Error("Connected to the host but no runtime client is available."));
-      }
-    };
-
-    const check = () => {
-      const snapshot = store.getSnapshot(serverId);
-      if (snapshot?.client && isHostRuntimeConnected(snapshot)) {
-        finish(null, snapshot.client);
-      }
-    };
-
-    timeout = setTimeout(() => {
-      const lastError = store.getSnapshot(serverId)?.lastError;
-      finish(
-        new Error(
-          lastError
-            ? `Connected to the host but runtime client did not become ready: ${lastError}`
-            : "Connected to the host but no runtime client is available.",
-        ),
-      );
-    }, RUNTIME_CLIENT_WAIT_MS);
-    unsubscribe = store.subscribe(serverId, check);
-    check();
-  });
-}
-
-async function resolveDaemonClient(
-  probeAndUpsertDirectConnection: ReturnType<
-    typeof useHostMutations
-  >["probeAndUpsertDirectConnection"],
-  password?: string,
-): Promise<DaemonClient> {
-  const serving = findServingHostClient();
-  if (serving) return serving;
-  const connected = findConnectedClient();
-  if (connected) return connected;
-  if (typeof window === "undefined" || !window.location?.host) {
-    throw new Error("No local Paseo host is connected yet — start the daemon and retry.");
-  }
-  const probed = await probeAndUpsertDirectConnection({
-    endpoint: window.location.host,
-    ...(password?.trim() ? { password: password.trim() } : {}),
-  });
-  return waitForRuntimeClient(probed.serverId);
-}
-
 async function pollForGinitToken(
   client: DaemonClient | null,
+  baseUrl: string,
   deviceCode: string,
   expiresIn: number,
 ): Promise<string> {
@@ -150,7 +92,7 @@ async function pollForGinitToken(
   while (Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 2000));
     try {
-      const poll = await pollGinitDeviceFlow(client, deviceCode);
+      const poll = await pollGinitDeviceFlow(client, baseUrl, deviceCode);
       if (poll.status === "completed" && poll.token) return poll.token;
     } catch (cause) {
       if (!isWeb || !(cause instanceof TypeError)) throw cause;
@@ -159,55 +101,65 @@ async function pollForGinitToken(
   throw new Error("Feishu login timed out");
 }
 
-async function startGinitDeviceFlow(client: DaemonClient | null): Promise<{
+async function startGinitDeviceFlow(
+  client: DaemonClient | null,
+  baseUrl: string,
+): Promise<{
   deviceCode: string;
   verificationUri: string;
   expiresIn: number;
 }> {
-  if (!isWeb) {
-    if (!client) throw new Error("No Paseo host is connected yet.");
-    return client.hubDeviceStart(ginitBaseUrl());
+  const normalized = baseUrl.replace(/\/+$/, "");
+  try {
+    const response = await fetch(`${normalized}/auth/device/start`, { method: "POST" });
+    if (!response.ok) throw new Error(`Ginit device start failed (${response.status})`);
+    const data = (await response.json()) as {
+      device_code: string;
+      verification_uri: string;
+      expires_in: number;
+    };
+    return {
+      deviceCode: data.device_code,
+      verificationUri: data.verification_uri,
+      expiresIn: data.expires_in,
+    };
+  } catch (directError) {
+    // Native standalone apps and web both prefer direct HTTP (no CORS on
+    // native). Fall back to the connected daemon's RPC when direct HTTP is
+    // unavailable (e.g. a browser being served by a daemon without CORS).
+    if (!client) throw directError;
+    return client.hubDeviceStart(baseUrl);
   }
-  const normalized = ginitBaseUrl().replace(/\/+$/, "");
-  const response = await fetch(`${normalized}/auth/device/start`, { method: "POST" });
-  if (!response.ok) throw new Error(`Ginit device start failed (${response.status})`);
-  const data = (await response.json()) as {
-    device_code: string;
-    verification_uri: string;
-    expires_in: number;
-  };
-  return {
-    deviceCode: data.device_code,
-    verificationUri: data.verification_uri,
-    expiresIn: data.expires_in,
-  };
 }
 
 async function pollGinitDeviceFlow(
   client: DaemonClient | null,
+  baseUrl: string,
   deviceCode: string,
 ): Promise<{ status: "pending" | "completed"; token: string | null }> {
-  if (!isWeb) {
-    if (!client) throw new Error("No Paseo host is connected yet.");
-    return client.hubDevicePoll(ginitBaseUrl(), deviceCode);
+  const normalized = baseUrl.replace(/\/+$/, "");
+  try {
+    const response = await fetch(`${normalized}/auth/device/poll`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ device_code: deviceCode }),
+    });
+    if (response.status === 202) return { status: "pending", token: null };
+    if (!response.ok) throw new Error(`Ginit device poll failed (${response.status})`);
+    const data = (await response.json()) as { status: "pending" | "completed"; token?: string };
+    return { status: data.status, token: data.token ?? null };
+  } catch (directError) {
+    if (!client) throw directError;
+    return client.hubDevicePoll(baseUrl, deviceCode);
   }
-  const normalized = ginitBaseUrl().replace(/\/+$/, "");
-  const response = await fetch(`${normalized}/auth/device/poll`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ device_code: deviceCode }),
-  });
-  if (response.status === 202) return { status: "pending", token: null };
-  if (!response.ok) throw new Error(`Ginit device poll failed (${response.status})`);
-  const data = (await response.json()) as { status: "pending" | "completed"; token?: string };
-  return { status: data.status, token: data.token ?? null };
 }
 
 async function listDevicesAsUser(
   token: string,
   client: DaemonClient | null,
+  baseUrl: string,
 ): Promise<WelcomeHubDevice[]> {
-  const normalized = ginitBaseUrl().replace(/\/+$/, "");
+  const normalized = baseUrl.replace(/\/+$/, "");
   try {
     const response = await fetch(`${normalized}/api/paseo/devices`, {
       headers: { authorization: `Bearer ${token}` },
@@ -270,50 +222,72 @@ async function listDevicesAsUser(
 
 export function GinitFeishuWelcome({ onConnected }: { onConnected?: (serverId: string) => void }) {
   useHosts();
-  const { probeAndUpsertDirectConnection, upsertRelayConnection } = useHostMutations();
+  const { upsertRelayConnection } = useHostMutations();
   const [state, setState] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [error, setError] = useState<string | null>(null);
   const [devices, setDevices] = useState<WelcomeHubDevice[] | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [password, setPassword] = useState("");
   const [needsPassword, setNeedsPassword] = useState(false);
+  const [nativeBaseUrl, setNativeBaseUrl] = useState<string | null>(null);
+  const [baseUrlDraft, setBaseUrlDraft] = useState<string>("");
+  const [showBaseUrlEditor, setShowBaseUrlEditor] = useState(false);
 
-  const refreshDevices = useCallback(async (token: string, client: DaemonClient | null) => {
-    setDevices(await listDevicesAsUser(token, client));
+  useEffect(() => {
+    if (isWeb) return;
+    let cancelled = false;
+    void (async () => {
+      const value = await getNativeGinitBaseUrl();
+      if (cancelled) return;
+      setNativeBaseUrl(value);
+      setBaseUrlDraft(value ?? "");
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
-  const login = useCallback(
-    async (passwordOverride?: string) => {
-      setState("loading");
-      setError(null);
-      setNeedsPassword(false);
-      try {
-        const client = isWeb
-          ? (findServingHostClient() ?? findConnectedClient())
-          : await resolveDaemonClient(probeAndUpsertDirectConnection, passwordOverride);
-        const start = await startGinitDeviceFlow(client);
-        await openExternalUrl(start.verificationUri);
-        const token = await pollForGinitToken(client, start.deviceCode, start.expiresIn);
-        if (client) {
-          await client.hubLoginGinit(ginitBaseUrl(), token, { cacheOnly: true });
-        }
-        await storeToken(token);
-        await refreshDevices(token, client);
-        setState("ready");
-      } catch (cause) {
-        const message = cause instanceof Error ? cause.message : String(cause);
-        const passwordRequired = /password required/i.test(message);
-        setNeedsPassword(passwordRequired);
-        setError(
-          passwordRequired
-            ? "This daemon requires a password. Enter it below, then sign in again."
-            : message,
-        );
-        setState("error");
-      }
+  const refreshDevices = useCallback(
+    async (token: string, client: DaemonClient | null) => {
+      setDevices(await listDevicesAsUser(token, client, ginitBaseUrl(nativeBaseUrl)));
     },
-    [probeAndUpsertDirectConnection, refreshDevices],
+    [nativeBaseUrl],
   );
+
+  const login = useCallback(async () => {
+    setState("loading");
+    setError(null);
+    setNeedsPassword(false);
+    try {
+      const baseUrl = ginitBaseUrl(nativeBaseUrl);
+      // Native standalone apps talk to the ginit Hub directly and do not
+      // need a local/connected Paseo daemon. Web prefers the serving
+      // daemon's client when available.
+      const client =
+        isWeb && (findServingHostClient() ?? findConnectedClient())
+          ? (findServingHostClient() ?? findConnectedClient())
+          : null;
+      const start = await startGinitDeviceFlow(client, baseUrl);
+      await openExternalUrl(start.verificationUri);
+      const token = await pollForGinitToken(client, baseUrl, start.deviceCode, start.expiresIn);
+      if (client) {
+        await client.hubLoginGinit(baseUrl, token, { cacheOnly: true });
+      }
+      await storeToken(token);
+      await refreshDevices(token, client);
+      setState("ready");
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      const passwordRequired = /password required/i.test(message);
+      setNeedsPassword(passwordRequired);
+      setError(
+        passwordRequired
+          ? "This daemon requires a password. Enter it below, then sign in again."
+          : message,
+      );
+      setState("error");
+    }
+  }, [refreshDevices, nativeBaseUrl]);
 
   useEffect(() => {
     void (async () => {
@@ -321,9 +295,10 @@ export function GinitFeishuWelcome({ onConnected }: { onConnected?: (serverId: s
       if (!token) return;
       setState("loading");
       try {
-        const client = isWeb
-          ? (findServingHostClient() ?? findConnectedClient())
-          : await resolveDaemonClient(probeAndUpsertDirectConnection);
+        const client =
+          isWeb && (findServingHostClient() ?? findConnectedClient())
+            ? (findServingHostClient() ?? findConnectedClient())
+            : null;
         await refreshDevices(token, client);
         setState("ready");
       } catch (cause) {
@@ -331,15 +306,16 @@ export function GinitFeishuWelcome({ onConnected }: { onConnected?: (serverId: s
         setState("error");
       }
     })();
-  }, [probeAndUpsertDirectConnection, refreshDevices]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [refreshDevices, nativeBaseUrl]);
 
   const handleLoginPress = useCallback(() => {
     void login();
   }, [login]);
 
   const handlePasswordLoginPress = useCallback(() => {
-    void login(password);
-  }, [login, password]);
+    void login();
+  }, [login]);
 
   const handleRefreshPress = useCallback(() => {
     void (async () => {
@@ -348,9 +324,10 @@ export function GinitFeishuWelcome({ onConnected }: { onConnected?: (serverId: s
       try {
         const token = await loadStoredToken();
         if (!token) throw new Error("Login with Feishu first");
-        const client = isWeb
-          ? (findServingHostClient() ?? findConnectedClient())
-          : await resolveDaemonClient(probeAndUpsertDirectConnection);
+        const client =
+          isWeb && (findServingHostClient() ?? findConnectedClient())
+            ? (findServingHostClient() ?? findConnectedClient())
+            : null;
         await refreshDevices(token, client);
       } catch (cause) {
         setError(cause instanceof Error ? cause.message : String(cause));
@@ -358,7 +335,7 @@ export function GinitFeishuWelcome({ onConnected }: { onConnected?: (serverId: s
         setIsRefreshing(false);
       }
     })();
-  }, [probeAndUpsertDirectConnection, refreshDevices]);
+  }, [refreshDevices]);
 
   const handleConnectDevice = useCallback(
     async (device: WelcomeHubDevice) => {
@@ -384,6 +361,57 @@ export function GinitFeishuWelcome({ onConnected }: { onConnected?: (serverId: s
       }
     },
     [onConnected, upsertRelayConnection],
+  );
+
+  const handleSaveBaseUrl = useCallback(async () => {
+    const next = baseUrlDraft.trim();
+    await setNativeGinitBaseUrl(next);
+    setNativeBaseUrl(next.length > 0 ? next : null);
+    setShowBaseUrlEditor(false);
+    setError(null);
+  }, [baseUrlDraft]);
+
+  const handleShowBaseUrlEditor = useCallback(() => setShowBaseUrlEditor(true), []);
+
+  const baseUrlEditor = isWeb ? null : (
+    <View style={styles.baseUrlGroup} testID="welcome-ginit-baseurl">
+      {showBaseUrlEditor ? (
+        <>
+          <Text style={styles.deviceMeta}>
+            Hub HTTP origin (e.g. https://ginit.opensii.ai). Leave blank for the default.
+          </Text>
+          <TextInput
+            style={styles.passwordInput}
+            value={baseUrlDraft}
+            onChangeText={setBaseUrlDraft}
+            placeholder="https://ginit.opensii.ai"
+            autoCapitalize="none"
+            autoCorrect={false}
+            keyboardType="url"
+            testID="welcome-ginit-baseurl-input"
+          />
+          <Button
+            variant="default"
+            size="sm"
+            leftIcon={Save}
+            onPress={handleSaveBaseUrl}
+            disabled={state === "loading"}
+            testID="welcome-ginit-baseurl-save"
+          >
+            Save Hub URL
+          </Button>
+        </>
+      ) : (
+        <Button
+          variant="ghost"
+          size="sm"
+          onPress={handleShowBaseUrlEditor}
+          testID="welcome-ginit-baseurl-edit"
+        >
+          {nativeBaseUrl ? `Hub: ${nativeBaseUrl}` : "Configure Hub URL"}
+        </Button>
+      )}
+    </View>
   );
 
   let content: ReactNode;
@@ -461,6 +489,7 @@ export function GinitFeishuWelcome({ onConnected }: { onConnected?: (serverId: s
 
   return (
     <View style={styles.panel} testID="welcome-ginit-login">
+      {baseUrlEditor}
       {content}
       {error ? <Text style={styles.error}>{error}</Text> : null}
     </View>
@@ -469,6 +498,7 @@ export function GinitFeishuWelcome({ onConnected }: { onConnected?: (serverId: s
 
 const styles = StyleSheet.create((theme) => ({
   panel: { width: "100%", maxWidth: 420, gap: theme.spacing[3], marginBottom: theme.spacing[4] },
+  baseUrlGroup: { gap: theme.spacing[2] },
   deviceList: { gap: theme.spacing[2] },
   deviceListHeader: {
     flexDirection: "row",
