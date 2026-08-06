@@ -772,3 +772,18 @@ W: testbed 的 /opt/ginit/ginit 是旧版（无 paseo_hub.py/paseo_hub_gateway.p
 **验证**：发布并审核通过后，蔡晓杰账号重新走 Login with Feishu 授权流，授权页不再出现「无权限」提示。
 
 **注意**：QW.md 已记录——SSO 应用（aacb）与 IM connector bot 应用（`cli_a969…`，凭据在 `/root/.lark-cli/config.json`）相互独立；上线生产必须换生产专用 SSO 应用，并确保其可用范围覆盖目标租户全员。
+
+## 2026-08-06 - 手机端（Android App）生成：native 端 ginit Hub baseUrl 无注入源
+
+**Q（问题）**：现有 Paseo Expo 工程要生成可安装的 Android APK 并打通「飞书登录 → Ginit Hub 设备发现 → Relay E2EE 连接远程 ginit daemon」。但 ginit 的 Hub baseUrl 在 web 端由「承载 daemon」通过 `window.__PASEO_GINIT_CONFIG__` 注入；手机 App 上没有任何 daemon 可注入，`getGinitBaseUrl()` 兜底固定为 `https://ginit.opensii.ai`，导致手机端要么只能连默认 prod 域名、要么（原 `ginit-feishu-welcome.tsx` 的 native 分支）直接抛「No local Paseo host is connected yet」——因为 native 登录被设计成必须经 daemon RPC。
+
+**W（解决方法）**：
+
+1. `src/constants/ginit-config.ts`：新增 `getNativeGinitBaseUrl()`/`setNativeGinitBaseUrl()`，用 AsyncStorage 持久化用户配置的 Hub baseUrl（key `ginit.native.baseUrl`）；web 端仍走注入值，native 无配置时兜底默认域名。
+2. `src/components/ginit-feishu-welcome.tsx`：native 端在欢迎页新增「Configure Hub URL」可折叠输入框（仅 native 显示，web 保持只读注入）；登录/轮询/列设备改为「优先直连 ginit HTTP（native 无 CORS），失败时回退到已连接 daemon 的 RPC」，native 不再强制要求本地 daemon。
+3. `src/components/welcome-ginit-device-row.tsx`：整行改为可点（Pressable + pressed 态 + accessibilityState 记忆化），扩大触控命中区、清晰显示 Connect/Offline，符合窄屏触控规范。
+4. 本地 Android 构建：本机无 Android 工具链，安装 Adoptium JDK 17 + Android cmdline-tools/platform-35/build-tools-35.0.0/NDK/CMake，`expo prebuild` 后 `./gradlew :app:assembleRelease -PreactNativeArchitectures=arm64-v8a --no-daemon --max-workers=1`，产出 `app-release.apk`（105MB，arm64-v8a，package `sh.paseo`）。
+
+**验证**：`npx tsgo --noEmit` 通过、定向 `npm run lint` 0 错误；Gradle `BUILD SUCCESSFUL in 59m 27s`；`apksigner verify` 通过（Android Debug 证书）、`aapt dump badging` 确认 package/version/ABI。APK 已复制到 `releases/paseo-0.2.0-arm64.apk`（sha256 0f1b8055…）。
+
+**遗留**：① 无真机/模拟器连接（`adb devices` 为空），无法做运行态飞书登录/Relay 连接的 Playwright 验证，只能靠构建成功 + typecheck/lint + 代码审查确认；② 生产签名仍需正式 keystore（当前是 debug 证书）；③ 本机 `java` 未加入 PATH，需用 `JAVA_HOME=~/.local/opt/jdk-17*` + `ANDROID_HOME=~/.local/android-sdk` 显式设置后才能重复构建。
