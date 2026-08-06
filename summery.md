@@ -720,3 +720,9 @@ E2E 使用全新隔离 Chromium context。为了复用用户已完成的飞书�
 **用户需求**：① 「npm 如何安装本地代码，帮我写一个脚本」② 追加「npm 打包也可以帮我上传到 github 么？」
 
 **内容总结**：新写 `scripts/paseo-install-local.sh`，实现「把当前仓库源码以 npm 全局安装形态装到系统」。核心思路：workspace 里 @getpaseo/_ 互相依赖且 registry 上只有旧版 0.2.3，不能直接 `npm i -g` 仓库目录；脚本先 `npm pack` 出 6 个 workspace 包（highlight/relay/protocol/client/server/cli），把各包 package.json 里的 @getpaseo/_ 依赖重写成 `file:<tarball 路径>`，再用 `--ignore-scripts` 二次打包成自包含 tarball，最后 `npm install -g` cli 的 tarball。已端到端干跑验证：真实全局安装成功（`npm root -g` 下 @getpaseo/cli@0.2.0），`paseo daemon status` 正常（Local Daemon running / Connected Daemon reachable，版本 0.2.0），运行中的 supervisor（PID 2565738）未受影响。关于「上传到 GitHub」：本机无 `gh` CLI，不能直接代传 release，但脚本的 `--release-dir DIR` 参数可产出可分发目录（6 个 tarball + install.sh，依赖全部 `file:./` 相对路径），已验证从任意目录执行 install.sh 能成功全局安装；该目录可整体拷到其它机器，或手动作为 GitHub Release assets 上传。遗留：若要我直接传到 GitHub Release，需先装 gh（`sudo apt install gh`）并完成 `gh auth login`。
+
+## 2026-08-06 需求：对比官网 paseo 的 github，本地改了什么？代码修改量级
+
+**Query**：对比官网 paseo 的 github，本地改了什么内容？代码修改量级有多少？之后追问从用户体验功能维度对比（当前会自动导入所有 daemon，之前每个需单独上传）。
+
+**总结**：本地分支 `feat_ginit_connect_20260730` 相对官方 `upstream/main`（共同祖先 bb3f5c5）领先 63 个提交，其中约 20 个为实际代码，其余为文档。纯代码净增约 **+6,430 行 / −620 行**（46 个文件），另约 +3,500 行文档。核心改动是新增「ginit(飞书)账号 → WebSocket Hub 中继器 → 本地 daemon」连接链路，主要分布在 server/hub/\*（connector 656、ginit-enroller 405、hub-connector 342、device-keypair 148）、protocol/hub.ts(272)、app host-page 的 GinitHubSection(+463) 及若干部署脚本。用户体验维度：官方是逐台配对/上传模型，本地改为飞书登录一次自动发现并一键连接账号下所有 daemon（自动导入所有 daemon），并引入设备密钥对+TOFU 指纹、Hub 签名密钥与 relay E2EE 密钥分离等安全机制。已生成文档 docs/local-modifications-vs-official.md 并推送到 gair 远程。
