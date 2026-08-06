@@ -1,3 +1,16 @@
+## 2026-08-06 - macOS 本地全局安装脚本无法执行
+
+**Q（问题）**：在全新 macOS 环境执行 `./scripts/paseo-install-local.sh` 时先因系统没有 `npm` 失败；安装项目指定的 Node.js 22.20.0 后，又因 macOS 自带 Bash 3.2 不支持 `declare -A` 关联数组而在打包阶段失败。继续安装后，脚本还因 `set -u` 把 `$installed_ver（...）` 中紧邻变量名的中文全角括号解析成变量名的一部分，导致安装已完成但脚本以 `unbound variable` 退出。
+
+**W（解决方法）**：
+
+1. 按仓库 `.tool-versions` 安装官方 Node.js 22.20.0 arm64 到 `~/.local/opt/node-v22.20.0-darwin-arm64`，并将 `~/.local/bin` 写入 `~/.zshrc` 的 `PATH`。
+2. 修改 [scripts/paseo-install-local.sh](scripts/paseo-install-local.sh)，移除 Bash 4 才支持的关联数组，改用 `raw_tgz_path` / `final_tgz_path` 函数按 workspace 动态计算 tarball 路径，使脚本兼容 macOS 自带 Bash 3.2。
+3. 将变量与后续中文字符之间改为 `${installed_ver}`、`${STAGING}`、`${FINAL_DIR}` 的显式边界，避免 `set -u` 下的 UTF-8 变量名误解析。
+4. 使用 `--no-restart` 完成全局安装，避免未经确认重启 6767 daemon、中断正在运行的 agent。最终 `paseo` 位于 `~/.local/bin/paseo`，版本为 0.2.0。
+
+**验证**：修复后的 `./scripts/paseo-install-local.sh --no-restart` 完整执行成功；`paseo --version` 输出 0.2.0。该问题属于 Shell/CLI 安装流程，不涉及浏览器 UI，Playwright 验证不适用。
+
 ## 2026-07-29 - 设置页 Web 宿主身份边界与 Hub Relay 发现字段
 
 **Q（问题）**：设计要求 Paseo Web 只能缓存飞书用户 token，不能因 Settings 页登录而 enroll 成设备；设备连接也必须使用 Hub 发布的 Relay endpoint、daemon 公钥和 `connection_ready`，不能依赖用户手工输入的直连地址。此前设置页仍调用无 `cacheOnly` 的登录，并使用默认 host 地址执行 direct TCP probe；Paseo 端设备列表 schema 也没有透传 Ginit Hub 已提供的 Relay metadata。

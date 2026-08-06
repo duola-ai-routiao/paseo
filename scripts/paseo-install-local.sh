@@ -87,31 +87,37 @@ tgz_basename() {
   scope_short="${scope_short/\//-}"
   echo "${scope_short}-$2.tgz"
 }
-
-declare -A PKG_VER=()
-for pkg in "${LOCAL_PACKAGES[@]}"; do
-  PKG_VER[$(pkg_name "$pkg")]=$(pkg_ver "$pkg")
-done
+raw_tgz_path() {
+  local pkg="$1"
+  local name
+  name=$(pkg_name "$pkg")
+  echo "$RAW_DIR/$(tgz_basename "$name" "$(pkg_ver "$pkg")")"
+}
+final_tgz_path() {
+  local pkg="$1"
+  local name
+  name=$(pkg_name "$pkg")
+  echo "$FINAL_DIR/$(tgz_basename "$name" "$(pkg_ver "$pkg")")"
+}
 
 for pkg in "${LOCAL_PACKAGES[@]}"; do
   npm pack --workspace "packages/$pkg" --pack-destination "$RAW_DIR" >/dev/null
-  echo "    ✓ $(pkg_name "$pkg")@${PKG_VER[$(pkg_name "$pkg")]}"
+  echo "    ✓ $(pkg_name "$pkg")@$(pkg_ver "$pkg")"
 done
 
 echo "==> [3/5] 解包并把 @getpaseo/* 依赖重写为 file:<tarball 绝对路径>"
-declare -A RAW_TGZ=()
+TGZ_LIST=""
 for pkg in "${LOCAL_PACKAGES[@]}"; do
-  name=$(pkg_name "$pkg")
-  RAW_TGZ[$name]="$RAW_DIR/$(tgz_basename "$name" "${PKG_VER[$name]}")"
+  TGZ_LIST+="$(raw_tgz_path "$pkg")"$'\n'
 done
-export TGZ_LIST="$(printf '%s\n' "${RAW_TGZ[@]}")"
+export TGZ_LIST
 
 for pkg in "${LOCAL_PACKAGES[@]}"; do
   name=$(pkg_name "$pkg")
   short="${name#@getpaseo/}"
   dest="$PKG_DIR/$short"
   mkdir -p "$dest"
-  tar -xzf "${RAW_TGZ[$name]}" -C "$dest" --strip-components=1
+  tar -xzf "$(raw_tgz_path "$pkg")" -C "$dest" --strip-components=1
   node - "$dest/package.json" <<'JS'
 const fs = require("fs");
 const pkgPath = process.argv[2];
@@ -138,13 +144,11 @@ JS
 done
 
 echo "==> [4/5] 二次打包为自包含 tarball（--ignore-scripts 保住 file: 改写）"
-declare -A FINAL_TGZ=()
 for pkg in "${LOCAL_PACKAGES[@]}"; do
   name=$(pkg_name "$pkg")
   short="${name#@getpaseo/}"
   (cd "$PKG_DIR/$short" && npm pack --pack-destination "$FINAL_DIR" --ignore-scripts >/dev/null)
-  FINAL_TGZ[$name]="$FINAL_DIR/$(tgz_basename "$name" "${PKG_VER[$name]}")"
-  echo "    ✓ $(basename "${FINAL_TGZ[$name]}")"
+  echo "    ✓ $(basename "$(final_tgz_path "$pkg")")"
 done
 
 # ---------- 产出可分发 release 目录 ----------
@@ -159,7 +163,7 @@ if [[ -n "$RELEASE_DIR" ]]; then
   # 先拷原件（占住文件名），再对含内部依赖的包做「相对路径重写 + 重打」。
   for pkg in "${LOCAL_PACKAGES[@]}"; do
     name=$(pkg_name "$pkg")
-    cp "${RAW_TGZ[$name]}" "$RELEASE_DIR/"
+    cp "$(raw_tgz_path "$pkg")" "$RELEASE_DIR/"
   done
   # 重写函数：解包 → @getpaseo/* 依赖改 file:./<basename> → --ignore-scripts 重打
   repack_relative() {
@@ -169,7 +173,7 @@ if [[ -n "$RELEASE_DIR" ]]; then
     short="${name#@getpaseo/}"
     dest="$RELEASE_DIR/.pkg-$short"
     mkdir -p "$dest"
-    tar -xzf "${RAW_TGZ[$name]}" -C "$dest" --strip-components=1
+    tar -xzf "$(raw_tgz_path "$pkg")" -C "$dest" --strip-components=1
     node - "$dest/package.json" "$RELEASE_DIR" <<'JS'
 const fs = require("fs");
 const pkgPath = process.argv[2];
@@ -231,7 +235,7 @@ if [[ "$PACK_ONLY" == "1" || -n "$RELEASE_DIR" ]]; then
 fi
 
 echo "==> [5/5] npm install -g @getpaseo/cli（file: 链解析全部内部依赖）"
-npm install -g "${FINAL_TGZ[@getpaseo/cli]}" \
+npm install -g "$(final_tgz_path cli)" \
   --cache "$NPM_CACHE" \
   --no-audit --no-fund
 
@@ -240,7 +244,7 @@ GLOBAL_ROOT="$(npm root -g)"
 installed_ver="$(node -p "require('$GLOBAL_ROOT/@getpaseo/cli/package.json').version" 2>/dev/null || echo '?')"
 echo "    全局安装路径: $GLOBAL_ROOT/@getpaseo/cli"
 echo "    paseo 命令:    $(command -v paseo || echo '(未在 PATH 中)')"
-echo "    安装版本:      $installed_ver（当前仓库 checkout）"
+echo "    安装版本:      ${installed_ver}（当前仓库 checkout）"
 
 echo ""
 echo "验证命令："
@@ -270,4 +274,4 @@ esac
 
 echo ""
 echo "🎉 完成。卸载请运行: $0 --uninstall"
-echo "   （中间产物在 $STAGING，可整目录删除；$FINAL_DIR 里的 tarball 可复制到其它机器复用）"
+echo "   （中间产物在 ${STAGING}，可整目录删除；${FINAL_DIR} 里的 tarball 可复制到其它机器复用）"
