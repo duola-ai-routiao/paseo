@@ -734,3 +734,8 @@ E2E 使用全新隔离 Chromium context。为了复用用户已完成的飞书�
 **用户需求**：当前代码能否帮我重构生成手机端？——澄清后目标：生成可安装的 Android App，连接 ginit 远程 daemon 链路；采用本地构建方式；改造范围=链路+体验优化。
 
 **内容总结**：基于现有 Paseo Expo(SDK54/RN0.81) 工程生成可安装 Android APK，并打通手机端「飞书登录 → Ginit Hub 设备发现 → Relay E2EE 连接远程 ginit daemon」链路。关键改动：① `ginit-config.ts` 新增 native 端持久化 Hub baseUrl（AsyncStorage），web 保持注入；② `ginit-feishu-welcome.tsx` 欢迎页新增「Configure Hub URL」入口（native 专属），登录改为「优先直连 ginit HTTP、失败回退 daemon RPC」，native 不再强制本地 daemon；③ `welcome-ginit-device-row.tsx` 整行可点+触控态+命中区扩大。本机无 Android 工具链，安装 Adoptium JDK17 + Android SDK(platform-35/build-tools35/NDK/CMake)，`expo prebuild` + `gradlew assembleRelease` 单 ABI(arm64-v8a) 成功产出 APK（BUILD SUCCESSFUL 59m27s，105MB，`sh.paseo` 0.2.0）。typecheck/lint 全绿，apksigner/aapt 校验通过，APK 已在 `releases/paseo-0.2.0-arm64.apk`。遗留：无真机/模拟器做运行态飞书/Relay 验证（adb 无设备）；生产签名需正式 keystore。
+
+## 2026-08-07 - http://150.5.173.43:8236/welcome 无法打开
+
+**用户需求**：ssh 到远程服务器检查为何 8236 页面打不开。
+**处理结果**：SSH 上 testbed（ginit-testbed/150.5.173.43）诊断发现 paseo-web 容器（8236→6767）处于 Restarting 无限崩溃循环（RestartCount=658），根因是 PID 锁文件 paseo.pid 损坏为 0 字节空文件，daemon 每次启动报 "Failed to acquire PID lock due to race condition" 后退、容器重启。确认无真实 daemon 进程后删除空锁文件并 docker restart paseo-web，容器恢复 healthy、锁文件正常写入，8236/welcome 返回 200 且 Playwright 验证页面正常渲染并列出全部 workspace。已记录到 QW.md。

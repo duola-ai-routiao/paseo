@@ -787,3 +787,22 @@ W: testbed 的 /opt/ginit/ginit 是旧版（无 paseo_hub.py/paseo_hub_gateway.p
 **验证**：`npx tsgo --noEmit` 通过、定向 `npm run lint` 0 错误；Gradle `BUILD SUCCESSFUL in 59m 27s`；`apksigner verify` 通过（Android Debug 证书）、`aapt dump badging` 确认 package/version/ABI。APK 已复制到 `releases/paseo-0.2.0-arm64.apk`（sha256 0f1b8055…）。
 
 **遗留**：① 无真机/模拟器连接（`adb devices` 为空），无法做运行态飞书登录/Relay 连接的 Playwright 验证，只能靠构建成功 + typecheck/lint + 代码审查确认；② 生产签名仍需正式 keystore（当前是 debug 证书）；③ 本机 `java` 未加入 PATH，需用 `JAVA_HOME=~/.local/opt/jdk-17*` + `ANDROID_HOME=~/.local/android-sdk` 显式设置后才能重复构建。
+
+## 2026-08-07 - http://150.5.173.43:8236/welcome 无法打开（Connection refused）
+
+**Q（问题）**：`http://150.5.173.43:8236/welcome`（testbed 上 paseo-web 容器通过 8236→6767 暴露的 Paseo daemon Web UI）完全无法打开，`curl` 报 `Connection refused`，`nc` 端口探测失败。
+
+**W（解决方法）**：
+
+1. **根因**：`paseo-web` 容器（`paseo:local-ginit`，端口绑定 `0.0.0.0:8236->6767/tcp`）处于 **`Restarting (1)` 无限重启循环**（RestartCount=658），所以 8236 端口无监听、连接被拒。
+2. **容器反复崩溃的直接原因**：Paseo daemon 启动时 `Failed to acquire PID lock due to race condition`。根因是 PID 锁文件 `/var/lib/docker/volumes/paseo-web-home/_data/.paseo/paseo.pid` 变成**0 字节空文件**（`uid=1000` 属主，所有者为容器内 `paseo` 用户）。守护进程崩溃清理时释放锁会把文件 unlink，但心跳/写入路径把文件留成了空文件——`acquirePidLock` 读到空文件→`readPidLock` 返回 null→走 `writeNewPidLock` 用 `open(pidPath,"wx")` 独占创建→遇到已存在的空文件报 `EEXIST`→抛 `race condition` 错误→进程退出→容器 restart→无限循环。
+3. **修复**：先确认**没有任何 paseo daemon 进程在跑**（`ps` 无 `paseo-supervisor`/`daemon-worker`，安全），备份空锁文件后 `rm -f` 删除，然后 `docker restart paseo-web`。守护进程以全新锁文件正常启动，`paseo.pid` 成功写入 `{"pid":7,"startedAt":"...","listen":"0.0.0.0:6767","heartbeat":true}`，容器恢复 `Up (healthy)`，RestartCount 归零。
+4. **验证**：`curl http://150.5.173.43:8236/welcome` 返回 200，标题 `Paseo`；Playwright 打开页面正常渲染，自动跳转 `/open-project` 并列出全部 workspace/host，daemon 日志显示 `Server listening on http://0.0.0.0:6767`、`Bootstrap complete`。
+
+**踩坑记录**：
+
+- 老的 `paseo.pid` 是 json 锁文件，空文件（0 字节）会被 `writeNewPidLock` 的 `open(...,"wx")` 当「已存在」报 EEXIST，而不是被当作 stale 清理——这是锁文件损坏（非缺失）时的一个隐患。
+- 容器 `Restarting (1)` 时 `docker exec` 无法进入（报 "Container is restarting"），日志只能看 `docker logs`。
+- 修复前**必须确认没有真实 daemon 进程在持锁**，否则删锁会让两个 daemon 同时监听 6767 冲突。
+
+**遗留**：该容器由 `paseo:local-ginit` 镜像 + 手动端口绑定启动（无 compose 栈、无标签），重启策略 `unless-stopped`；若容器再次进入锁文件损坏的崩溃循环，可复用本方法（删 `paseo.pid` 后 `docker restart`）。
