@@ -64,6 +64,7 @@ function createConnector(options?: {
   storage?: AgentStorage;
   sent?: unknown[];
   loadExecutionAgent?: (agentId: string) => Promise<void>;
+  relayMetadata?: { endpoint: string; useTls: boolean; publicKey: string };
 }): PaseoHubConnector {
   const sent = options?.sent ?? [];
   const manager =
@@ -80,6 +81,7 @@ function createConnector(options?: {
     daemonId: "daemon",
     publicKey: "public",
     signCanonical: (value) => `signed:${value}`,
+    relayMetadataProvider: options?.relayMetadata ? () => options.relayMetadata ?? null : undefined,
     workspaceRegistry: {} as WorkspaceRegistry,
     providerSnapshotManager: {} as ProviderSnapshotManager,
     agentManager: manager,
@@ -102,6 +104,32 @@ describe("PaseoHubConnector", () => {
       expect.objectContaining({
         type: "hub.hello",
         signature: expect.stringMatching(/^signed:2:device:daemon:/),
+      }),
+    ]);
+  });
+
+  test("includes signed relay metadata in the handshake", () => {
+    const sent: unknown[] = [];
+    const connector = createConnector({
+      sent,
+      relayMetadata: {
+        endpoint: "relay.example.com:443",
+        useTls: true,
+        publicKey: "relay-public-key",
+      },
+    });
+
+    connector.start();
+
+    expect(sent).toEqual([
+      expect.objectContaining({
+        type: "hub.hello",
+        relay: {
+          endpoint: "relay.example.com:443",
+          use_tls: true,
+          public_key: "relay-public-key",
+          signature: 'signed:["relay-v1","relay.example.com:443",true,"relay-public-key"]',
+        },
       }),
     ]);
   });

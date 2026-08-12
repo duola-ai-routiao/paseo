@@ -41,6 +41,14 @@ export const HubHelloSchema = z.object({
   publicKey: z.string().min(1),
   nonce: z.string().min(1),
   signature: z.string().min(1),
+  relay: z
+    .object({
+      endpoint: z.string().min(1),
+      use_tls: z.boolean(),
+      public_key: z.string().min(1),
+      signature: z.string().min(1),
+    })
+    .optional(),
 });
 
 export const HubWelcomeSchema = z.object({

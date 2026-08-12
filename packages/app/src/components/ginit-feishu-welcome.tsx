@@ -4,6 +4,7 @@ import { LogIn, RefreshCw, Save } from "lucide-react-native";
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import { Button } from "@/components/ui/button";
 import {
+  getGinitBaseUrl,
   getNativeGinitBaseUrl,
   setNativeGinitBaseUrl,
   getInjectedGinitConfig,
@@ -33,7 +34,7 @@ function ginitBaseUrl(nativeBaseUrl: string | null): string {
     }
     return configured;
   }
-  return nativeBaseUrl?.trim() || "https://ginit.opensii.ai";
+  return nativeBaseUrl?.trim() || getGinitBaseUrl();
 }
 
 const GINIT_TOKEN_STORAGE_KEY = "ginit.account.userToken";
@@ -451,13 +452,13 @@ export function GinitFeishuWelcome({ onConnected }: { onConnected?: (serverId: s
       {showBaseUrlEditor ? (
         <>
           <Text style={styles.deviceMeta}>
-            Hub HTTP origin (e.g. https://ginit.opensii.ai). Leave blank for the default.
+            Hub HTTP origin (e.g. https://staging.ginit.opensii.ai). Leave blank for the default.
           </Text>
           <TextInput
             style={styles.passwordInput}
             value={baseUrlDraft}
             onChangeText={setBaseUrlDraft}
-            placeholder="https://ginit.opensii.ai"
+            placeholder="https://staging.ginit.opensii.ai"
             autoCapitalize="none"
             autoCorrect={false}
             keyboardType="url"

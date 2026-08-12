@@ -48,6 +48,11 @@ interface HubConnectorOptions {
   daemonId: string;
   publicKey: string;
   signCanonical: (value: string) => string;
+  relayMetadataProvider?: () => {
+    endpoint: string;
+    useTls: boolean;
+    publicKey: string;
+  } | null;
   workspaceRegistry: WorkspaceRegistry;
   providerSnapshotManager: ProviderSnapshotManager;
   agentManager: AgentManager;
@@ -78,6 +83,7 @@ export class PaseoHubConnector {
   private readonly executionAgents = new Map<string, string>();
   private readonly adoptingAgents = new Map<string, string>();
   private readonly eventSeq = new Map<string, number>();
+  private workspaceSnapshotQueued = false;
   private unsubscribeAgents: (() => void) | null = null;
   private lastError: string | null = null;
 
@@ -132,6 +138,7 @@ export class PaseoHubConnector {
     socket.on("open", () => {
       this.reconnectDelayMs = RECONNECT_MIN_MS;
       const nonce = randomUUID();
+      const relay = this.options.relayMetadataProvider?.() ?? null;
       this.send({
         type: "hub.hello",
         protocolVersion: PaseoHubProtocolVersion,
@@ -142,6 +149,18 @@ export class PaseoHubConnector {
         signature: this.options.signCanonical(
           `${PaseoHubProtocolVersion}:${this.options.config.deviceId}:${this.options.daemonId}:${nonce}`,
         ),
+        ...(relay
+          ? {
+              relay: {
+                endpoint: relay.endpoint,
+                use_tls: relay.useTls,
+                public_key: relay.publicKey,
+                signature: this.options.signCanonical(
+                  JSON.stringify(["relay-v1", relay.endpoint, relay.useTls, relay.publicKey]),
+                ),
+              },
+            }
+          : {}),
       });
     });
     socket.on("message", (data) => this.handleMessage(data.toString()));
@@ -545,6 +564,7 @@ export class PaseoHubConnector {
   }
 
   private forwardAgentEvent(event: AgentManagerEvent): void {
+    if (event.type === "agent_state") this.queueWorkspaceSnapshot();
     let agent = null;
     if (event.type === "agent_state") {
       agent = event.agent;
@@ -570,6 +590,17 @@ export class PaseoHubConnector {
       seq,
       eventType,
       payload: event,
+    });
+  }
+
+  private queueWorkspaceSnapshot(): void {
+    if (this.workspaceSnapshotQueued || this.socket?.readyState !== WebSocket.OPEN) return;
+    this.workspaceSnapshotQueued = true;
+    queueMicrotask(() => {
+      this.workspaceSnapshotQueued = false;
+      void this.sendWorkspaceSnapshot().catch((error) =>
+        this.logger.warn({ err: error }, "Failed to send Hub workspace snapshot"),
+      );
     });
   }
 

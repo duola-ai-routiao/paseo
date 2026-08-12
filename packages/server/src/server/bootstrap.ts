@@ -205,7 +205,6 @@ import {
 import { archiveAgentCommand } from "./agent/lifecycle-command.js";
 import { CreateAgentLifecycleDispatch } from "./agent/create-agent-lifecycle-dispatch.js";
 import { GinitHubEnroller } from "./hub/ginit-enroller.js";
-import { HubConnector } from "./hub/hub-connector.js";
 import {
   HubRelationshipController,
   type HubRelationshipClock,
@@ -578,6 +577,7 @@ export async function createPaseoDaemon(
   let hubConnector: PaseoHubConnector | null = null;
   let hubConfigPoller: ReturnType<typeof setInterval> | null = null;
   let activeHubConfigKey = "";
+  let syncHubConnector: (() => Promise<void>) | null = null;
 
   const staticDir = config.staticDir;
   const downloadTokenTtlMs = config.downloadTokenTtlMs ?? 60000;
@@ -1120,54 +1120,14 @@ export async function createPaseoDaemon(
       }),
   });
 
-  // Connects the daemon to the ginit Hub over WebSocket once enrolled; this
-  // is what makes the daemon (and its running services) visible on the hub.
-  const ginitHubConnector = new HubConnector({
-    paseoHome: config.paseoHome,
-    logger,
-    workspaceSnapshotProvider: () =>
-      agentManager
-        .listAgents()
-        .filter((agent) => agent.internal !== true)
-        .map((agent) => ({
-          id: agent.id,
-          title: agent.config?.title ?? null,
-          cwd: agent.cwd,
-          provider: agent.provider ?? null,
-          status: agent.lifecycle,
-        })),
-    // Relay metadata is runtime state: it travels with every signed hello so
-    // endpoint/TLS changes reach the hub without re-enrollment.
-    relayMetadataProvider: () =>
-      config.relayEnabled && config.relayPublicEndpoint
-        ? {
-            endpoint: config.relayPublicEndpoint,
-            useTls: config.relayPublicUseTls ?? config.relayUseTls ?? false,
-            publicKey: daemonKeyPair.publicKeyB64,
-          }
-        : null,
-  });
-  const pushHubWorkspaceSnapshot = () => ginitHubConnector.pushWorkspaceSnapshot();
-  // Keep the hub's view of running services fresh as agents come and go.
-  // Coalesce bursts (stream events) into one snapshot push per tick.
-  let hubSnapshotPushQueued = false;
-  agentManager.subscribe(
-    (event) => {
-      if (event.type !== "agent_state") return;
-      if (hubSnapshotPushQueued) return;
-      hubSnapshotPushQueued = true;
-      setTimeout(() => {
-        hubSnapshotPushQueued = false;
-        pushHubWorkspaceSnapshot();
-      }, 0).unref?.();
-    },
-    { replayState: false },
-  );
-
   const hubGinitEnroller = new GinitHubEnroller({
     paseoHome: config.paseoHome,
     logger,
-    onHubConfigPersisted: () => ginitHubConnector.connect(),
+    onHubConfigPersisted: () => {
+      void syncHubConnector?.().catch((error) =>
+        logger.warn({ err: error }, "Failed to refresh Hub connector after enrollment"),
+      );
+    },
   });
 
   const loopService = new LoopService({
@@ -1626,9 +1586,8 @@ export async function createPaseoDaemon(
               hubGinitEnroller,
             );
             await hubRelationships.start();
-            ginitHubConnector.start();
 
-            const syncHubConnector = async () => {
+            syncHubConnector = async () => {
               const persistedHub = loadPersistedConfig(config.paseoHome, logger).daemon?.hub;
               const nextHub =
                 persistedHub?.enabled &&
@@ -1656,6 +1615,14 @@ export async function createPaseoDaemon(
                 daemonId: serverId,
                 publicKey: hubDeviceKeyPair.publicKeyB64,
                 signCanonical: hubDeviceKeyPair.signCanonical,
+                relayMetadataProvider: () =>
+                  relayEnabled && relayPublicEndpoint
+                    ? {
+                        endpoint: relayPublicEndpoint,
+                        useTls: relayPublicUseTls,
+                        publicKey: daemonKeyPair.publicKeyB64,
+                      }
+                    : null,
                 workspaceRegistry,
                 providerSnapshotManager,
                 agentManager,
@@ -1665,7 +1632,7 @@ export async function createPaseoDaemon(
             };
             await syncHubConnector();
             hubConfigPoller = setInterval(() => {
-              void syncHubConnector().catch((error) =>
+              void syncHubConnector?.().catch((error) =>
                 logger.warn({ err: error }, "Failed to refresh Hub connector configuration"),
               );
             }, 2_000);
@@ -1730,10 +1697,10 @@ export async function createPaseoDaemon(
 
   const stop = async () => {
     await hubRelationships.stop();
-    ginitHubConnector.stop();
     workspaceReconciliation.dispose();
     if (hubConfigPoller) clearInterval(hubConfigPoller);
     hubConfigPoller = null;
+    syncHubConnector = null;
     await hubConnector?.stop();
     scriptHealthMonitor.stop();
     clearInterval(idleAgentCollectionTimer);

@@ -739,3 +739,17 @@ E2E 使用全新隔离 Chromium context。为了复用用户已完成的飞书�
 
 **用户需求**：ssh 到远程服务器检查为何 8236 页面打不开。
 **处理结果**：SSH 上 testbed（ginit-testbed/150.5.173.43）诊断发现 paseo-web 容器（8236→6767）处于 Restarting 无限崩溃循环（RestartCount=658），根因是 PID 锁文件 paseo.pid 损坏为 0 字节空文件，daemon 每次启动报 "Failed to acquire PID lock due to race condition" 后退、容器重启。确认无真实 daemon 进程后删除空锁文件并 docker restart paseo-web，容器恢复 healthy、锁文件正常写入，8236/welcome 返回 200 且 Playwright 验证页面正常渲染并列出全部 workspace。已记录到 QW.md。
+
+## 2026-08-12 Paseo staging 443 迁移与主机离线修复
+
+**用户需求**：停止在 Preview/Web UI 链路中暴露旧的 `8234`、`8235`、`8236` 端口，迁移到 staging HTTPS/WSS 入口；复现 `paseo-alan-MS-7D99 offline · srv_MxTC`，检查远程 Hub 握手和日志，并重新部署 Web UI。
+
+**端点迁移**：App 的本地 Expo/native fallback 从 `https://ginit.opensii.ai` 改为 `https://staging.ginit.opensii.ai`。公网 Hub 控制面使用 `wss://staging.ginit.opensii.ai/ws/v1/paseo`（TLS `443`），Relay 数据面使用 `staging.ginit.opensii.ai:443` 并启用 TLS；`8235` 和 `8234` 仅保留为服务端内部监听端口，不再写入客户端配置或设备上报 metadata。旧 `8236` 是 testbed Paseo Web UI 映射，不是 Hub；远程 Web UI 改由 Preview 地址 `https://server-61b94c112f.preview.opensii.ai` 提供。
+
+**问题复现与根因**：在有真实飞书登录态的 Chrome 中访问 `/welcome`，稳定复现主机显示 offline。daemon 日志确认同一 daemon 同时启动了旧 `HubConnector` 和新的 `PaseoHubConnector`，两条连接使用相同设备身份，后建立的连接会触发 Hub `4409 superseded connection`，连接相互替换，最终造成远程状态不稳定。这也是端点看似仍指向旧服务、迁移不完整的代码原因；单改 `~/.paseo/config.json` 无法消除重复连接。
+
+**代码修复**：删除 bootstrap 中重复的旧 Hub connector，只保留一个 `PaseoHubConnector`；将 enrollment 后重连、Hub 配置轮询、远程执行、workspace/provider snapshot 和 agent 状态变化刷新全部接到该连接上。扩展 `hub.hello` 协议，携带经过 daemon 签名的 Relay endpoint、TLS 标记和公钥，使 Hub 能收到最新的 `:443` TLS Relay metadata，同时保持该字段 optional 以兼容旧客户端/daemon。Welcome 页的默认值、提示和占位地址统一读取 staging 配置。
+
+**服务端与部署**：Ginit testbed 的 Caddy 精确路由 `/ws` 到内部 Relay `:8234`，并保持 `/ws/v1/*` 到内部 Hub gateway `:8091`，两者统一从公网 `443` 进入。Preview Web UI 已重新部署到 `server-61b94c112f.preview.opensii.ai`；旧 Preview 环境可能因 `8h` TTL 自动销毁，不能再用过期域名判断当前部署状态。部署与排障步骤记录在 `paseo-preview-deployment-runbook.md`。
+
+**最终验证**：staging Hub 和 Relay 均完成真实 HTTP `101 Switching Protocols` WebSocket upgrade；重建 daemon 后日志不再出现 `4409 superseded connection`；重新打开 `/welcome` 后 `paseo-alan-MS-7D99 · srv_MxTC` 从 offline 变为 online。协议测试、connector 测试、`npm run typecheck`、`npm run lint` 和 `npm run build:server` 均通过。未在未经确认时重启主 daemon；端口 `6767` 的重启仅在用户要求自动执行修复后进行。

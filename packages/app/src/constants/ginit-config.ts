@@ -28,7 +28,7 @@ export function getInjectedGinitConfig(): GinitRuntimeConfig | null {
 }
 
 /** Metro development fallback only. */
-const DEFAULT_GINIT_BASE_URL = "https://ginit.opensii.ai";
+const DEFAULT_GINIT_BASE_URL = "https://staging.ginit.opensii.ai";
 
 /**
  * Native (mobile) apps have no serving daemon to inject the Hub endpoint, so

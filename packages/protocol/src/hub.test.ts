@@ -10,6 +10,31 @@ import {
 } from "./hub.js";
 
 describe("Paseo Hub protocol", () => {
+  test("accepts signed relay metadata on hello", () => {
+    const message = PaseoHubOutboundMessageSchema.parse({
+      type: "hub.hello",
+      protocolVersion: 2,
+      deviceId: "device-1",
+      daemonId: "daemon-1",
+      publicKey: "hub-public-key",
+      nonce: "nonce-1",
+      signature: "hello-signature",
+      relay: {
+        endpoint: "relay.example.com:443",
+        use_tls: true,
+        public_key: "relay-public-key",
+        signature: "relay-signature",
+      },
+    });
+
+    expect(message.relay).toEqual({
+      endpoint: "relay.example.com:443",
+      use_tls: true,
+      public_key: "relay-public-key",
+      signature: "relay-signature",
+    });
+  });
+
   test("accepts workspace/provider snapshots", () => {
     const message = HubWorkspaceSnapshotMessageSchema.parse({
       type: "hub.workspace.snapshot",
